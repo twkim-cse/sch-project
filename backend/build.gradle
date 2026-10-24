@@ -20,6 +20,7 @@ repositories {
 dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-webflux' // WebClient 사용(AI 서버 호출, 타임아웃 처리)
+    implementation 'org.apache.pdfbox:pdfbox:3.0.3' // F-02/F-04: PDF 쪽별 글자 추출
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
 }
 
