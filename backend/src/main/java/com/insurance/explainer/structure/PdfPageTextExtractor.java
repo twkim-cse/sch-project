@@ -15,8 +15,9 @@ import java.util.List;
  * 구조 분석(F-04)의 입력인 {@link PageText} 목록을 만든다.
  */
 @Component
-public class PdfPageTextExtractor {
+public class PdfPageTextExtractor implements PageExtractor {
 
+    @Override
     public List<PageText> extract(InputStream pdfInputStream) throws IOException {
         List<PageText> pages = new ArrayList<>();
         try (PDDocument document = Loader.loadPDF(pdfInputStream.readAllBytes())) {

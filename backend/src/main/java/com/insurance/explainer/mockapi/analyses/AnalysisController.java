@@ -1,9 +1,9 @@
 package com.insurance.explainer.mockapi.analyses;
 
+import com.insurance.explainer.document.DocumentStore;
+import com.insurance.explainer.document.RiderInfo;
 import com.insurance.explainer.mockapi.ApiException;
 import com.insurance.explainer.mockapi.analyses.dto.*;
-import com.insurance.explainer.mockapi.documents.DocumentStore;
-import com.insurance.explainer.mockapi.documents.RiderInfo;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
