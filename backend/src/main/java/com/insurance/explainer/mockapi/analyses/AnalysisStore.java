@@ -1,0 +1,20 @@
+package com.insurance.explainer.mockapi.analyses;
+
+import org.springframework.stereotype.Component;
+
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+@Component
+public class AnalysisStore {
+
+    private final Map<String, AnalysisRecord> analyses = new ConcurrentHashMap<>();
+
+    public void save(AnalysisRecord record) {
+        analyses.put(record.analysisId(), record);
+    }
+
+    public AnalysisRecord get(String analysisId) {
+        return analyses.get(analysisId);
+    }
+}
