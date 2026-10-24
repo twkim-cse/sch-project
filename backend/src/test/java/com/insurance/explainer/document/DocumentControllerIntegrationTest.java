@@ -17,20 +17,27 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * POST/GET/DELETE /api/documents 가 실제로 엮여서 동작하는지(DI, HTTP 상태 코드,
- * NOT_FOUND 오류 형식) 확인하는 가벼운 통합 테스트. 조항 내용 자체는
+ * NOT_FOUND 오류 형식, 비동기 처리) 확인하는 가벼운 통합 테스트. 조항 내용 자체는
  * {@link DocumentUploadServiceTest}에서 더 자세히 다룬다.
+ * <p>
+ * 여기서는 Spring이 실제로 {@code @Async} 프록시를 적용하므로, 업로드 직후에는
+ * CHECKING이고 백그라운드 처리가 끝난 뒤에야 최종 상태가 되는 것까지 확인한다.
+ * MOCK_DOCUMENTS는 꺼서(false) 실제 분석 경로를 검증한다.
  */
 @SpringBootTest(classes = Application.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@TestPropertySource(properties = "app.mock-documents=false")
 class DocumentControllerIntegrationTest {
 
     @LocalServerPort
@@ -84,20 +91,41 @@ class DocumentControllerIntegrationTest {
         HttpEntity<MultiValueMap<String, Object>> request = new HttpEntity<>(body, headers);
 
         ResponseEntity<String> uploadResponse = rest.postForEntity(url("/api/documents"), request, String.class);
+
         assertThat(uploadResponse.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        // 명세서대로 POST는 글자 추출·구조 분석을 기다리지 않고 곧장 CHECKING을 돌려준다.
+        // (끝날 때까지 기다렸다면 이 응답 자체가 이미 REJECTED/READY였을 것이다.)
         assertThat(uploadResponse.getBody()).contains("\"status\":\"CHECKING\"");
 
         String documentId = extractDocumentId(uploadResponse.getBody());
 
-        ResponseEntity<String> statusResponse = rest.getForEntity(
-                url("/api/documents/" + documentId), String.class);
-        assertThat(statusResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(statusResponse.getBody()).contains("\"status\":\"REJECTED\"");
-        assertThat(statusResponse.getBody()).contains("\"code\":\"STRUCTURE_FAILED\"");
+        // 비동기 처리가 끝날 때까지 명세서의 권장 간격(2~3초)으로 조회를 반복한다.
+        String statusBody = pollUntilNotChecking(documentId);
+        assertThat(statusBody).contains("\"status\":\"REJECTED\"");
+        assertThat(statusBody).contains("\"code\":\"STRUCTURE_FAILED\"");
 
         ResponseEntity<Void> deleteResponse = rest.exchange(
                 url("/api/documents/" + documentId), HttpMethod.DELETE, null, Void.class);
         assertThat(deleteResponse.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+    }
+
+    private String pollUntilNotChecking(String documentId) {
+        Instant deadline = Instant.now().plusSeconds(10);
+        while (Instant.now().isBefore(deadline)) {
+            ResponseEntity<String> response = rest.getForEntity(url("/api/documents/" + documentId), String.class);
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+            String body = response.getBody();
+            if (body != null && !body.contains("\"status\":\"CHECKING\"")) {
+                return body;
+            }
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(e);
+            }
+        }
+        throw new AssertionError("10초 안에 비동기 처리가 끝나지 않음: " + documentId);
     }
 
     private byte[] buildTextPdf(String text) throws IOException {

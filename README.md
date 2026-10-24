@@ -57,3 +57,18 @@ npm run dev
 
 - 프론트는 백엔드 주소를 직접 호출하지 않고 `/api` 상대 경로만 사용합니다. 실제 대상 서버는 `frontend/vite.config.ts`의 프록시 설정(`PROXY_TARGET`)이 결정합니다.
 - 백엔드의 `/api/health`는 자신의 상태와 함께 AI 서버의 `/ai/health`를 2초 타임아웃으로 호출한 결과를 합쳐 반환합니다. AI 서버가 응답하지 않으면 `ai: "DOWN"`으로 표시됩니다.
+
+## 문서 API 가짜 응답 모드 (MOCK_DOCUMENTS)
+
+실제 약관 PDF 없이 프론트 화면을 만들 때 쓰는 옵션입니다. `MOCK_DOCUMENTS=true`이면
+`POST /api/documents`·`GET /api/documents/{id}`가 실제 PDF를 검사·분석하지 않고,
+**어떤 PDF를 올려도** 명세서 4장 예시와 같은 모양의 고정 결과(상태 READY, 예시 특약
+목록 `rider01: 암진단 특별약관` 등)를 바로 돌려줍니다.
+
+- **docker-compose 기본값은 `true`** 입니다(`docker-compose.yml`). `.env`에서
+  `MOCK_DOCUMENTS=false`로 바꾸면 실제 F-02 입력 검사·F-04 구조 분석을 거칩니다.
+- docker 없이 `./gradlew bootRun`으로 백엔드만 띄울 때 기본값은 `false`(실제 분석)이며,
+  가짜 응답을 쓰려면 환경변수로 켭니다:
+  ```bash
+  MOCK_DOCUMENTS=true ./gradlew bootRun
+  ```

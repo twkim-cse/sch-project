@@ -25,7 +25,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * F-02(입력 검사) + F-04(구조 분석) 연결을 검증한다.
- * 실제 PDFBox 추출이 필요 없는 케이스(목차/조항 인식)는 가짜 {@link com.insurance.explainer.structure.PageExtractor}로
+ * <p>
+ * 이 테스트는 {@code new DocumentUploadService(...)}로 직접 만든 일반 객체를 쓰므로
+ * Spring AOP 프록시가 없어 {@code @Async}가 적용되지 않는다. 즉 {@link DocumentUploadService#accept}
+ * 호출 안에서 {@link DocumentUploadService#analyzeAsync}가 같은 스레드로 곧장 실행되고,
+ * 돌아왔을 때 {@link DocumentStore}에는 이미 최종 상태(READY/REJECTED)가 들어 있다
+ * (실제 비동기 동작, PENDING→READY 전환은 {@link DocumentControllerIntegrationTest}에서 확인한다).
+ * <p>
+ * 실제 PDFBox 추출이 필요 없는 케이스(조항 인식)는 가짜 {@link com.insurance.explainer.structure.PageExtractor}로
  * 한국어 조항 텍스트를 직접 공급해 검증하고, 입력 검사 자체(용량·형식·빈 글자)는
  * 실제로 만든 PDF 바이트로 검증한다.
  */
@@ -35,10 +42,10 @@ class DocumentUploadServiceTest {
 
     @Test
     void PDF가_아니면_NOT_PDF_오류() {
-        DocumentUploadService service = new DocumentUploadService(unreachableExtractor(), analyzer);
+        DocumentUploadService service = newService(unreachableExtractor(), false);
         MultipartFile file = new MockMultipartFile("file", "readme.txt", "text/plain", "hello".getBytes());
 
-        assertThatThrownBy(() -> service.process(file))
+        assertThatThrownBy(() -> service.accept(file))
                 .isInstanceOf(ApiException.class)
                 .satisfies(e -> {
                     ApiException apiException = (ApiException) e;
@@ -49,10 +56,10 @@ class DocumentUploadServiceTest {
 
     @Test
     void 용량이_50MB를_넘으면_FILE_TOO_LARGE_오류() {
-        DocumentUploadService service = new DocumentUploadService(unreachableExtractor(), analyzer);
+        DocumentUploadService service = newService(unreachableExtractor(), false);
         MultipartFile file = new OversizedFakeFile(DocumentUploadService.MAX_FILE_SIZE_BYTES + 1);
 
-        assertThatThrownBy(() -> service.process(file))
+        assertThatThrownBy(() -> service.accept(file))
                 .isInstanceOf(ApiException.class)
                 .satisfies(e -> {
                     ApiException apiException = (ApiException) e;
@@ -63,11 +70,32 @@ class DocumentUploadServiceTest {
 
     @Test
     void 글자가_없는_스캔본_PDF는_NO_TEXT로_거절() throws IOException {
-        DocumentUploadService service = new DocumentUploadService(new com.insurance.explainer.structure.PdfPageTextExtractor(), analyzer);
+        DocumentStore store = new DocumentStore();
+        DocumentUploadService service = newService(store, new com.insurance.explainer.structure.PdfPageTextExtractor(), false);
         byte[] blankPdf = buildBlankPdf();
         MultipartFile file = new MockMultipartFile("file", "scan.pdf", "application/pdf", blankPdf);
 
-        DocumentRecord record = service.process(file);
+        DocumentRecord accepted = service.accept(file);
+        DocumentRecord record = store.get(accepted.documentId());
+
+        assertThat(record.status()).isEqualTo(DocumentStatus.REJECTED);
+        assertThat(record.rejectCode()).isEqualTo("NO_TEXT");
+    }
+
+    @Test
+    void 글자가_거의_없는_쪽이_절반을_넘으면_NO_TEXT로_거절() {
+        // 3쪽 중 2쪽이 거의 비어 있으면(절반 초과) 한 쪽에 충분한 글자가 있어도 스캔본으로 본다.
+        List<PageText> mostlyBlankPages = List.of(
+                new PageText(1, ""),
+                new PageText(2, "제1조(목적) 이 약관은 보험계약의 내용을 규정합니다. 아주 충분히 긴 본문입니다."),
+                new PageText(3, "  ")
+        );
+        DocumentStore store = new DocumentStore();
+        DocumentUploadService service = newService(store, input -> mostlyBlankPages, false);
+        MultipartFile file = new MockMultipartFile("file", "terms.pdf", "application/pdf", new byte[]{1, 2, 3});
+
+        DocumentRecord accepted = service.accept(file);
+        DocumentRecord record = store.get(accepted.documentId());
 
         assertThat(record.status()).isEqualTo(DocumentStatus.REJECTED);
         assertThat(record.rejectCode()).isEqualTo("NO_TEXT");
@@ -75,12 +103,14 @@ class DocumentUploadServiceTest {
 
     @Test
     void 조항_구조를_인식하지_못하면_STRUCTURE_FAILED로_거절() throws IOException {
-        DocumentUploadService service = new DocumentUploadService(new com.insurance.explainer.structure.PdfPageTextExtractor(), analyzer);
+        DocumentStore store = new DocumentStore();
+        DocumentUploadService service = newService(store, new com.insurance.explainer.structure.PdfPageTextExtractor(), false);
         byte[] plainTextPdf = buildTextPdf(
                 "This document has plenty of extractable text but none of it looks like a Korean insurance clause.");
         MultipartFile file = new MockMultipartFile("file", "not-terms.pdf", "application/pdf", plainTextPdf);
 
-        DocumentRecord record = service.process(file);
+        DocumentRecord accepted = service.accept(file);
+        DocumentRecord record = store.get(accepted.documentId());
 
         assertThat(record.status()).isEqualTo(DocumentStatus.REJECTED);
         assertThat(record.rejectCode()).isEqualTo("STRUCTURE_FAILED");
@@ -93,11 +123,14 @@ class DocumentUploadServiceTest {
                 new PageText(2, "암진단 특별약관\n제5조(보험금 지급에 관한 세부규정)\n"
                         + "① 암보장개시일은 계약일부터 그 날을 포함하여 90일이 지난날의 다음날로 합니다.")
         );
-        DocumentUploadService service = new DocumentUploadService(input -> koreanPages, analyzer);
+        DocumentStore store = new DocumentStore();
+        DocumentUploadService service = newService(store, input -> koreanPages, false);
         MultipartFile file = new MockMultipartFile("file", "terms.pdf", "application/pdf", new byte[]{1, 2, 3});
 
-        DocumentRecord record = service.process(file);
+        DocumentRecord accepted = service.accept(file);
+        assertThat(accepted.status()).isEqualTo(DocumentStatus.PENDING);
 
+        DocumentRecord record = store.get(accepted.documentId());
         assertThat(record.status()).isEqualTo(DocumentStatus.READY);
         assertThat(record.pageCount()).isEqualTo(2);
         assertThat(record.riders()).extracting(RiderInfo::riderId).containsExactly("rider01");
@@ -106,7 +139,32 @@ class DocumentUploadServiceTest {
         assertThat(record.expiresAt()).isNotNull();
     }
 
+    @Test
+    void MOCK_DOCUMENTS가_켜져있으면_내용과_무관하게_고정_READY_결과를_바로_돌려준다() {
+        DocumentStore store = new DocumentStore();
+        DocumentUploadService service = newService(store, unreachableExtractor(), true);
+        // PDF도 아니고 용량도 체크하지 않는다 - 가짜 모드는 검사 자체를 건너뛴다.
+        MultipartFile file = new MockMultipartFile("file", "whatever.txt", "text/plain", "not a pdf at all".getBytes());
+
+        DocumentRecord record = service.accept(file);
+
+        assertThat(record.status()).isEqualTo(DocumentStatus.READY);
+        assertThat(record.pageCount()).isEqualTo(212);
+        assertThat(record.riders()).extracting(RiderInfo::riderId).containsExactly("rider01");
+        assertThat(store.get(record.documentId())).isEqualTo(record);
+    }
+
     // ---- 테스트 보조 ----
+
+    private DocumentUploadService newService(com.insurance.explainer.structure.PageExtractor extractor, boolean mock) {
+        return newService(new DocumentStore(), extractor, mock);
+    }
+
+    private DocumentUploadService newService(DocumentStore store,
+                                              com.insurance.explainer.structure.PageExtractor extractor,
+                                              boolean mock) {
+        return new DocumentUploadService(extractor, analyzer, store, mock);
+    }
 
     private com.insurance.explainer.structure.PageExtractor unreachableExtractor() {
         return input -> {

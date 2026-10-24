@@ -5,3 +5,9 @@ ai:
   # AI 서버 기본 주소. 로컬 실행: http://localhost:8001, docker-compose: http://ai:8001
   base-url: ${AI_BASE_URL:http://localhost:8001}
   health-timeout-ms: 2000
+
+app:
+  # true이면 문서 API(F-02/F-04)가 실제 PDF를 분석하지 않고, 어떤 PDF를 올려도
+  # 명세서 예시와 같은 고정 READY 결과(예시 특약 목록 등)를 바로 돌려준다.
+  # 실제 약관 없이 프론트 화면을 만들 때 쓴다. 기본값은 false(= 실제 분석).
+  mock-documents: ${MOCK_DOCUMENTS:false}

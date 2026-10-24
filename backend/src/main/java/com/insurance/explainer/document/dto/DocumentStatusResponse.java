@@ -22,6 +22,10 @@ public record DocumentStatusResponse(
         OffsetDateTime expiresAt,
         ApiError reject
 ) {
+    public static DocumentStatusResponse checking(String documentId) {
+        return new DocumentStatusResponse(documentId, "CHECKING", null, null, null, null, null, null);
+    }
+
     public static DocumentStatusResponse ready(String documentId, int pageCount,
                                                 List<RiderInfo> riders, OffsetDateTime expiresAt) {
         // F-03(문서 종류 판별)이 아직 가짜 응답이라 productName·versionLabel은 비워 둔다.

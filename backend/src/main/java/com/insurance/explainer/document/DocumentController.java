@@ -26,12 +26,12 @@ public class DocumentController {
         this.uploadService = uploadService;
     }
 
-    // POST /api/documents - 약관 PDF 업로드. 처리는 이 안에서 동기적으로 끝나지만,
-    // 명세서대로 응답은 항상 202 CHECKING이다(실제 상태는 뒤이은 GET에서 확인).
+    // POST /api/documents - 약관 PDF 업로드. 형식·용량만 바로 확인하고, 명세서대로
+    // 곧장 202 CHECKING을 돌려준다. 글자 추출·구조 분석은 비동기로 진행되며 실제
+    // 상태는 뒤이은 GET으로 확인한다(저장은 uploadService가 맡는다).
     @PostMapping(consumes = "multipart/form-data")
     public ResponseEntity<UploadResponse> upload(@RequestParam("file") MultipartFile file) {
-        DocumentRecord record = uploadService.process(file);
-        store.save(record);
+        DocumentRecord record = uploadService.accept(file);
         return ResponseEntity.status(HttpStatus.ACCEPTED)
                 .body(new UploadResponse(record.documentId(), "CHECKING"));
     }
@@ -42,6 +42,9 @@ public class DocumentController {
         DocumentRecord record = store.get(documentId);
         if (record == null) {
             throw ApiException.notFound("다시 올려 달라고 안내");
+        }
+        if (record.status() == DocumentStatus.PENDING) {
+            return DocumentStatusResponse.checking(documentId);
         }
         if (record.status() == DocumentStatus.REJECTED) {
             return DocumentStatusResponse.rejected(documentId, record.rejectCode(), record.rejectMessage());
