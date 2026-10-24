@@ -7,7 +7,11 @@ ai:
   health-timeout-ms: 2000
 
 app:
-  # true이면 문서 API(F-02/F-04)가 실제 PDF를 분석하지 않고, 어떤 PDF를 올려도
-  # 명세서 예시와 같은 고정 READY 결과(예시 특약 목록 등)를 바로 돌려준다.
-  # 실제 약관 없이 프론트 화면을 만들 때 쓴다. 기본값은 false(= 실제 분석).
+  # true이면 문서 API(F-02/F-04)가 글자 추출·구조 분석만 건너뛰고, 명세서 예시와
+  # 같은 고정 READY 결과(예시 특약 목록 등)를 돌려준다. PDF 형식·용량 검사(F-02
+  # NOT_PDF/FILE_TOO_LARGE)는 false일 때와 똑같이 한다. 실제 약관 없이 프론트
+  # 화면을 만들 때 쓴다. 기본값은 false(= 실제 분석).
   mock-documents: ${MOCK_DOCUMENTS:false}
+  # mock-documents=true일 때 CHECKING에서 READY로 바뀌기까지 기다리는 시간(명세서
+  # "2~3초 간격 조회"와 맞춤). 테스트에서는 0으로 줄여 바로 끝나게 할 수 있다.
+  mock-documents-delay-ms: ${MOCK_DOCUMENTS_DELAY_MS:2500}

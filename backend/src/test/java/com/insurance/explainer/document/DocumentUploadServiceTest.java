@@ -140,18 +140,40 @@ class DocumentUploadServiceTest {
     }
 
     @Test
-    void MOCK_DOCUMENTS가_켜져있으면_내용과_무관하게_고정_READY_결과를_바로_돌려준다() {
+    void MOCK_DOCUMENTS가_켜져있으면_글자추출_구조분석만_건너뛰고_고정_READY_결과를_돌려준다() {
         DocumentStore store = new DocumentStore();
+        // 글자 추출(unreachableExtractor)은 호출되면 안 되지만, PDF 형식 검사는 통과해야 한다.
         DocumentUploadService service = newService(store, unreachableExtractor(), true);
-        // PDF도 아니고 용량도 체크하지 않는다 - 가짜 모드는 검사 자체를 건너뛴다.
-        MultipartFile file = new MockMultipartFile("file", "whatever.txt", "text/plain", "not a pdf at all".getBytes());
+        MultipartFile file = new MockMultipartFile("file", "whatever.pdf", "application/pdf",
+                "내용은 무엇이든 상관없다, 어차피 분석하지 않으니까".getBytes());
 
-        DocumentRecord record = service.accept(file);
+        DocumentRecord accepted = service.accept(file);
+        assertThat(accepted.status()).isEqualTo(DocumentStatus.PENDING);
 
+        DocumentRecord record = store.get(accepted.documentId());
         assertThat(record.status()).isEqualTo(DocumentStatus.READY);
         assertThat(record.pageCount()).isEqualTo(212);
         assertThat(record.riders()).extracting(RiderInfo::riderId).containsExactly("rider01");
-        assertThat(store.get(record.documentId())).isEqualTo(record);
+    }
+
+    @Test
+    void MOCK_DOCUMENTS가_켜져있어도_PDF_형식_검사는_실제와_똑같이_한다() {
+        DocumentUploadService service = newService(unreachableExtractor(), true);
+        MultipartFile file = new MockMultipartFile("file", "readme.txt", "text/plain", "hello".getBytes());
+
+        assertThatThrownBy(() -> service.accept(file))
+                .isInstanceOf(ApiException.class)
+                .satisfies(e -> assertThat(((ApiException) e).code()).isEqualTo("NOT_PDF"));
+    }
+
+    @Test
+    void MOCK_DOCUMENTS가_켜져있어도_용량_검사는_실제와_똑같이_한다() {
+        DocumentUploadService service = newService(unreachableExtractor(), true);
+        MultipartFile file = new OversizedFakeFile(DocumentUploadService.MAX_FILE_SIZE_BYTES + 1);
+
+        assertThatThrownBy(() -> service.accept(file))
+                .isInstanceOf(ApiException.class)
+                .satisfies(e -> assertThat(((ApiException) e).code()).isEqualTo("FILE_TOO_LARGE"));
     }
 
     // ---- 테스트 보조 ----
@@ -163,7 +185,9 @@ class DocumentUploadServiceTest {
     private DocumentUploadService newService(DocumentStore store,
                                               com.insurance.explainer.structure.PageExtractor extractor,
                                               boolean mock) {
-        return new DocumentUploadService(extractor, analyzer, store, mock);
+        // 지연은 0으로 둬서 단위 테스트가 느려지지 않게 한다. 실제 지연 동작은
+        // MockDocumentsIntegrationTest에서 확인한다.
+        return new DocumentUploadService(extractor, analyzer, store, mock, 0);
     }
 
     private com.insurance.explainer.structure.PageExtractor unreachableExtractor() {

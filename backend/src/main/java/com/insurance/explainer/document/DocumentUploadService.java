@@ -22,10 +22,10 @@ import java.util.UUID;
 /**
  * F-02 입력 검사 + F-04 구조 분석 연결.
  * <p>
- * 업로드된 파일이 PDF인지, 50MB 이하인지는 요청을 받는 즉시(동기) 확인한다.
- * 통과하면 명세서대로 곧바로 202 {@code CHECKING}을 돌려주고, PDFBox로 쪽 번호를
- * 유지하며 글자를 추출한 뒤 {@link DocumentStructureAnalyzer}로 조항 구조를 분석하는
- * 작업은 비동기로 진행한다(진행 중에는 조회(GET)가 CHECKING을 돌려준다).
+ * 업로드된 파일이 PDF인지, 50MB 이하인지는 {@code MOCK_DOCUMENTS} 여부와 상관없이
+ * 요청을 받는 즉시(동기) 똑같이 확인한다. 통과하면 명세서대로 곧바로 202 {@code CHECKING}을
+ * 돌려주고, 나머지(PDFBox로 쪽 번호를 유지하며 글자 추출 → {@link DocumentStructureAnalyzer}로
+ * 조항 구조 분석)는 비동기로 진행한다(진행 중에는 조회(GET)가 CHECKING을 돌려준다).
  * 글자가 거의 없는 쪽이 전체 쪽의 절반을 넘으면 스캔본으로 보고 거절(NO_TEXT)하고,
  * 조항 구조를 인식하지 못하면 거절(STRUCTURE_FAILED)한다.
  * <p>
@@ -33,8 +33,9 @@ import java.util.UUID;
  * 보고 그대로 구조 분석을 진행한다. 상품명·판은 채우지 않는다(F-03 연동 후 채워짐).
  * <p>
  * {@code MOCK_DOCUMENTS=true}(환경변수, application.yml의 {@code app.mock-documents})
- * 이면 위 과정을 전부 건너뛰고 명세서 예시와 같은 모양의 고정 READY 결과를 바로 돌려준다.
- * 실제 약관 없이 프론트 화면을 만들어야 할 때 쓴다.
+ * 이면 PDF 형식·용량 검사는 그대로 하되, 글자 추출과 구조 분석만 건너뛰고 명세서
+ * 예시와 같은 모양의 고정 READY 결과를 비동기로(= CHECKING으로 있다가 잠시 뒤 READY로)
+ * 돌려준다. 실제 약관 없이 프론트 화면을 만들어야 할 때 쓴다.
  */
 @Service
 public class DocumentUploadService {
@@ -48,33 +49,29 @@ public class DocumentUploadService {
     private final DocumentStructureAnalyzer structureAnalyzer;
     private final DocumentStore store;
     private final boolean mockDocuments;
+    private final long mockDelayMs;
 
     public DocumentUploadService(PageExtractor pageExtractor,
                                   DocumentStructureAnalyzer structureAnalyzer,
                                   DocumentStore store,
-                                  @Value("${app.mock-documents:false}") boolean mockDocuments) {
+                                  @Value("${app.mock-documents:false}") boolean mockDocuments,
+                                  @Value("${app.mock-documents-delay-ms:2500}") long mockDelayMs) {
         this.pageExtractor = pageExtractor;
         this.structureAnalyzer = structureAnalyzer;
         this.store = store;
         this.mockDocuments = mockDocuments;
+        this.mockDelayMs = mockDelayMs;
     }
 
     /**
-     * 요청 스레드에서 호출된다. PDF 형식·용량만 바로 확인하고, 통과하면 PENDING 상태로
-     * 저장한 뒤 글자 추출·구조 분석은 {@link #analyzeAsync}에 맡긴다.
+     * 요청 스레드에서 호출된다. PDF 형식·용량은 MOCK_DOCUMENTS와 상관없이 항상 바로
+     * 확인하고, 통과하면 PENDING 상태로 저장한 뒤 나머지는 {@link #analyzeAsync}에 맡긴다.
      */
     public DocumentRecord accept(MultipartFile file) {
-        String documentId = UUID.randomUUID().toString();
-
-        if (mockDocuments) {
-            DocumentRecord ready = MockDocumentData.ready(documentId);
-            store.save(ready);
-            return ready;
-        }
-
         validate(file);
         byte[] pdfBytes = readBytes(file);
 
+        String documentId = UUID.randomUUID().toString();
         DocumentRecord pending = DocumentRecord.pending(documentId);
         store.save(pending);
         analyzeAsync(documentId, pdfBytes);
@@ -83,6 +80,11 @@ public class DocumentUploadService {
 
     @Async
     public void analyzeAsync(String documentId, byte[] pdfBytes) {
+        if (mockDocuments) {
+            sleepQuietly(mockDelayMs);
+            store.save(MockDocumentData.ready(documentId));
+            return;
+        }
         store.save(analyze(documentId, pdfBytes));
     }
 
@@ -148,5 +150,16 @@ public class DocumentUploadService {
 
     private RiderInfo toRiderInfo(RiderRange rider) {
         return new RiderInfo(rider.riderId(), rider.name(), rider.pageStart());
+    }
+
+    private void sleepQuietly(long millis) {
+        if (millis <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }
