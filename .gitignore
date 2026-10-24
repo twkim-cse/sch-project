@@ -1,0 +1,34 @@
+# 환경 변수
+.env
+*.env
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Java / Gradle (backend)
+backend/build/
+backend/.gradle/
+backend/out/
+!backend/gradle/wrapper/gradle-wrapper.jar
+*.class
+
+# Node / Vite (frontend)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+
+# Python / uv (ai)
+ai/.venv/
+ai/__pycache__/
+ai/**/__pycache__/
+ai/*.egg-info/
+ai/.pytest_cache/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,7 @@
+server:
+  port: 8080
+
+ai:
+  # AI 서버 기본 주소. 로컬 실행: http://localhost:8001, docker-compose: http://ai:8001
+  base-url: ${AI_BASE_URL:http://localhost:8001}
+  health-timeout-ms: 2000
