@@ -35,7 +35,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 분석 흐름 자체(QUEUED→RUNNING 단계별→DONE, 결과 조회, AI 실패 시 FAILED)에 집중한다.
  */
 @SpringBootTest(classes = Application.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@TestPropertySource(properties = {"app.mock-documents=true", "app.mock-documents-delay-ms=0"})
+@TestPropertySource(properties = {
+        "app.mock-documents=true",
+        "app.mock-documents-delay-ms=0",
+        // 분석 단계별 지연(프론트 진행 화면용)은 여기서는 0으로 줄여 빠르게 검증한다.
+        // 실제 지연 동작은 docker compose로 수동 확인한다(PR 설명 참고).
+        "app.mock-analysis-step-delay-min-ms=0",
+        "app.mock-analysis-step-delay-max-ms=0"
+})
 class AnalysisControllerIntegrationTest {
 
     private static HttpServer aiServer;

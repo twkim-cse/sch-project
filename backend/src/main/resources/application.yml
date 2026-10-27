@@ -15,3 +15,8 @@ app:
   # mock-documents=true일 때 CHECKING에서 READY로 바뀌기까지 기다리는 시간(명세서
   # "2~3초 간격 조회"와 맞춤). 테스트에서는 0으로 줄여 바로 끝나게 할 수 있다.
   mock-documents-delay-ms: ${MOCK_DOCUMENTS_DELAY_MS:2500}
+  # mock-documents=true일 때 분석 단계(EXTRACTING/CHECKING_QUOTES/EXPLAINING/
+  # FINALIZING)마다 기다리는 시간 범위. 프론트가 진행 화면을 시험할 수 있게
+  # 1~2초씩 머무르게 한다. 테스트에서는 0~0으로 줄일 수 있다.
+  mock-analysis-step-delay-min-ms: ${MOCK_ANALYSIS_STEP_DELAY_MIN_MS:1000}
+  mock-analysis-step-delay-max-ms: ${MOCK_ANALYSIS_STEP_DELAY_MAX_MS:2000}
