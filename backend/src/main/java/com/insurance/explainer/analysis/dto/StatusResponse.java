@@ -1,4 +1,4 @@
-package com.insurance.explainer.mockapi.analyses.dto;
+package com.insurance.explainer.analysis.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.insurance.explainer.mockapi.ApiError;
@@ -13,11 +13,19 @@ public record StatusResponse(
         Integer stepCount,
         ApiError error
 ) {
+    public static StatusResponse queued(String analysisId) {
+        return new StatusResponse(analysisId, "QUEUED", null, null, null, null);
+    }
+
     public static StatusResponse running(String analysisId, String step, int stepIndex, int stepCount) {
         return new StatusResponse(analysisId, "RUNNING", step, stepIndex, stepCount, null);
     }
 
     public static StatusResponse done(String analysisId) {
         return new StatusResponse(analysisId, "DONE", null, null, null, null);
+    }
+
+    public static StatusResponse failed(String analysisId, String code, String message) {
+        return new StatusResponse(analysisId, "FAILED", null, null, null, new ApiError(code, message));
     }
 }
