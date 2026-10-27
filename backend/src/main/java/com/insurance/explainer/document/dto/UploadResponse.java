@@ -1,4 +1,4 @@
-package com.insurance.explainer.mockapi.documents.dto;
+package com.insurance.explainer.document.dto;
 
 public record UploadResponse(String documentId, String status) {
 }

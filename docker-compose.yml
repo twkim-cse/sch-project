@@ -12,6 +12,9 @@ services:
       - "8080:8080"
     environment:
       - AI_BASE_URL=http://ai:8001
+      # 기본값 true: 실제 약관 없이도 프론트가 화면을 만들 수 있도록 문서 API가
+      # 명세서 예시 고정 결과를 돌려준다. .env에서 false로 바꾸면 실제 분석을 한다.
+      - MOCK_DOCUMENTS=${MOCK_DOCUMENTS:-true}
     depends_on:
       - ai
 

@@ -1,6 +1,6 @@
 package com.insurance.explainer.mockapi.analyses;
 
-import com.insurance.explainer.mockapi.documents.RiderInfo;
+import com.insurance.explainer.document.RiderInfo;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
