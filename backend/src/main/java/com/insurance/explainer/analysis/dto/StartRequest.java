@@ -1,4 +1,4 @@
-package com.insurance.explainer.mockapi.analyses.dto;
+package com.insurance.explainer.analysis.dto;
 
 import java.util.List;
 
