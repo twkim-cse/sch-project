@@ -187,7 +187,8 @@ class DocumentUploadServiceTest {
                                               boolean mock) {
         // 지연은 0으로 둬서 단위 테스트가 느려지지 않게 한다. 실제 지연 동작은
         // MockDocumentsIntegrationTest에서 확인한다.
-        return new DocumentUploadService(extractor, analyzer, store, mock, 0);
+        DocumentAnalyzer documentAnalyzer = new DocumentAnalyzer(extractor, analyzer, store, mock, 0);
+        return new DocumentUploadService(store, documentAnalyzer);
     }
 
     private com.insurance.explainer.structure.PageExtractor unreachableExtractor() {
