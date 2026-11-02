@@ -4,6 +4,7 @@ import com.insurance.explainer.document.dto.ClauseResponse;
 import com.insurance.explainer.document.dto.DocumentStatusResponse;
 import com.insurance.explainer.document.dto.UploadResponse;
 import com.insurance.explainer.mockapi.ApiException;
+import com.insurance.explainer.retention.DocumentRetentionService;
 import com.insurance.explainer.structure.Clause;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -20,10 +21,13 @@ public class DocumentController {
 
     private final DocumentStore store;
     private final DocumentUploadService uploadService;
+    private final DocumentRetentionService retentionService;
 
-    public DocumentController(DocumentStore store, DocumentUploadService uploadService) {
+    public DocumentController(DocumentStore store, DocumentUploadService uploadService,
+                               DocumentRetentionService retentionService) {
         this.store = store;
         this.uploadService = uploadService;
+        this.retentionService = retentionService;
     }
 
     // POST /api/documents - 약관 PDF 업로드. 형식·용량만 바로 확인하고, 명세서대로
@@ -66,13 +70,13 @@ public class DocumentController {
         return ClauseResponse.from(clause);
     }
 
-    // DELETE /api/documents/{documentId} - 파일과 분석 결과 즉시 삭제
+    // DELETE /api/documents/{documentId} - 파일과 분석 결과 즉시 삭제 (F-21)
     @DeleteMapping("/{documentId}")
     public ResponseEntity<Void> delete(@PathVariable String documentId) {
         if (!store.exists(documentId)) {
             throw ApiException.notFound("다시 올려 달라고 안내");
         }
-        store.delete(documentId);
+        retentionService.deleteDocumentAndAnalyses(documentId);
         return ResponseEntity.noContent().build();
     }
 }

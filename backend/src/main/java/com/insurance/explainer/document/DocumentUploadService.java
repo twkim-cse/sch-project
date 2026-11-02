@@ -1,11 +1,15 @@
 package com.insurance.explainer.document;
 
 import com.insurance.explainer.mockapi.ApiException;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.time.Duration;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.UUID;
 
 /**
@@ -22,6 +26,11 @@ import java.util.UUID;
  * 이면 PDF 형식·용량 검사는 그대로 하되, 글자 추출과 구조 분석만 건너뛰고 명세서
  * 예시와 같은 모양의 고정 READY 결과를 비동기로(= CHECKING으로 있다가 잠시 뒤 READY로)
  * 돌려준다. 실제 약관 없이 프론트 화면을 만들어야 할 때 쓴다.
+ * <p>
+ * F-21 자동 삭제: 업로드 시점에 보관 기한(expiresAt)을 한 번 정해 저장한다. 기본
+ * 24시간이며 {@code DOCUMENT_RETENTION_MS} 환경변수(application.yml의
+ * {@code app.document-retention-ms}, 밀리초)로 바꿀 수 있다. 실제 만료 시각이
+ * 지난 문서를 지우는 것은 {@link com.insurance.explainer.retention.DocumentRetentionService}가 맡는다.
  */
 @Service
 public class DocumentUploadService {
@@ -32,22 +41,28 @@ public class DocumentUploadService {
 
     private final DocumentStore store;
     private final DocumentAnalyzer documentAnalyzer;
+    private final long retentionMs;
 
-    public DocumentUploadService(DocumentStore store, DocumentAnalyzer documentAnalyzer) {
+    public DocumentUploadService(DocumentStore store, DocumentAnalyzer documentAnalyzer,
+                                  @Value("${app.document-retention-ms:86400000}") long retentionMs) {
         this.store = store;
         this.documentAnalyzer = documentAnalyzer;
+        this.retentionMs = retentionMs;
     }
 
     /**
      * 요청 스레드에서 호출된다. PDF 형식·용량은 MOCK_DOCUMENTS와 상관없이 항상 바로
      * 확인하고, 통과하면 PENDING 상태로 저장한 뒤 나머지는 {@link DocumentAnalyzer}에 맡긴다.
+     * 보관 기간(F-21, 기본 24시간)은 여기서 한 번 정해져 READY/REJECTED로 바뀌어도
+     * 그대로 이어진다.
      */
     public DocumentRecord accept(MultipartFile file) {
         validate(file);
         byte[] pdfBytes = readBytes(file);
 
         String documentId = UUID.randomUUID().toString();
-        DocumentRecord pending = DocumentRecord.pending(documentId);
+        OffsetDateTime expiresAt = OffsetDateTime.now(ZoneOffset.ofHours(9)).plus(Duration.ofMillis(retentionMs));
+        DocumentRecord pending = DocumentRecord.pending(documentId, expiresAt);
         store.save(pending);
         documentAnalyzer.analyzeAsync(documentId, pdfBytes);
         return pending;

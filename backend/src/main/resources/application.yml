@@ -30,3 +30,8 @@ app:
   # 1~2초씩 머무르게 한다. 테스트에서는 0~0으로 줄일 수 있다.
   mock-analysis-step-delay-min-ms: ${MOCK_ANALYSIS_STEP_DELAY_MIN_MS:1000}
   mock-analysis-step-delay-max-ms: ${MOCK_ANALYSIS_STEP_DELAY_MAX_MS:2000}
+  # F-21 자동 삭제: 업로드 시점부터 문서(+그 문서의 분석 결과)를 보관하는 시간(밀리초).
+  # 기본 24시간. 테스트·시연 때는 짧게 줄일 수 있다.
+  document-retention-ms: ${DOCUMENT_RETENTION_MS:86400000}
+  # 보관 기한이 지난 문서를 찾아 지우는 주기(밀리초). 기본 30초.
+  document-retention-sweep-ms: ${DOCUMENT_RETENTION_SWEEP_MS:30000}

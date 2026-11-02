@@ -188,7 +188,7 @@ class DocumentUploadServiceTest {
         // 지연은 0으로 둬서 단위 테스트가 느려지지 않게 한다. 실제 지연 동작은
         // MockDocumentsIntegrationTest에서 확인한다.
         DocumentAnalyzer documentAnalyzer = new DocumentAnalyzer(extractor, analyzer, store, mock, 0);
-        return new DocumentUploadService(store, documentAnalyzer);
+        return new DocumentUploadService(store, documentAnalyzer, java.time.Duration.ofHours(24).toMillis());
     }
 
     private com.insurance.explainer.structure.PageExtractor unreachableExtractor() {

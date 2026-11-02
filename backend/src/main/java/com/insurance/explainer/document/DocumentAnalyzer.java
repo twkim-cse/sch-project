@@ -11,8 +11,6 @@ import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
 import java.util.List;
 
 /**
@@ -22,11 +20,12 @@ import java.util.List;
  * 거치지 않아 비동기로 동작하지 않는다(self-invocation 문제, 분석 쪽
  * {@code AnalysisRunner}와 같은 이유). 그래서 {@link DocumentUploadService#accept}가
  * 이 빈을 (다른 빈으로서) 호출하도록 분리했다.
+ * <p>
+ * 보관 기한(expiresAt)은 업로드 시점에 이미 정해져 PENDING 레코드에 담겨 있으므로,
+ * 여기서는 그 값을 그대로 이어받아 READY/REJECTED 레코드를 만든다(새로 계산하지 않는다).
  */
 @Component
 public class DocumentAnalyzer {
-
-    private static final int DOCUMENT_RETENTION_HOURS = 24;
 
     private final PageExtractor pageExtractor;
     private final DocumentStructureAnalyzer structureAnalyzer;
@@ -48,24 +47,28 @@ public class DocumentAnalyzer {
 
     @Async
     public void analyzeAsync(String documentId, byte[] pdfBytes) {
+        DocumentRecord pending = store.get(documentId);
+        if (pending == null) {
+            return; // 처리 중 삭제(F-21)된 경우. 되살릴 필요 없다.
+        }
         if (mockDocuments) {
             sleepQuietly(mockDelayMs);
-            store.save(MockDocumentData.ready(documentId));
+            store.save(MockDocumentData.ready(pending));
             return;
         }
-        store.save(analyze(documentId, pdfBytes));
+        store.save(analyze(pending, pdfBytes));
     }
 
-    private DocumentRecord analyze(String documentId, byte[] pdfBytes) {
+    private DocumentRecord analyze(DocumentRecord pending, byte[] pdfBytes) {
         List<PageText> pages;
         try {
             pages = pageExtractor.extract(new ByteArrayInputStream(pdfBytes));
         } catch (IOException | RuntimeException e) {
-            return DocumentRecord.rejected(documentId, "NO_TEXT", "글자를 읽을 수 없는 PDF입니다.");
+            return pending.withRejected("NO_TEXT", "글자를 읽을 수 없는 PDF입니다.");
         }
 
         if (isScannedDocument(pages)) {
-            return DocumentRecord.rejected(documentId, "NO_TEXT", "글자를 읽을 수 없는 PDF입니다.");
+            return pending.withRejected("NO_TEXT", "글자를 읽을 수 없는 PDF입니다.");
         }
 
         try {
@@ -73,11 +76,9 @@ public class DocumentAnalyzer {
             List<RiderInfo> riders = result.riders().stream()
                     .map(this::toRiderInfo)
                     .toList();
-            OffsetDateTime expiresAt = OffsetDateTime.now(ZoneOffset.ofHours(9))
-                    .plusHours(DOCUMENT_RETENTION_HOURS);
-            return DocumentRecord.ready(documentId, pages.size(), riders, result.clauses(), expiresAt);
+            return pending.withReady(pages.size(), riders, result.clauses());
         } catch (StructureAnalysisException e) {
-            return DocumentRecord.rejected(documentId, "STRUCTURE_FAILED", "이 약관은 아직 지원하지 않습니다.");
+            return pending.withRejected("STRUCTURE_FAILED", "이 약관은 아직 지원하지 않습니다.");
         }
     }
 
