@@ -15,6 +15,10 @@ services:
       # 기본값 true: 실제 약관 없이도 프론트가 화면을 만들 수 있도록 문서 API가
       # 명세서 예시 고정 결과를 돌려준다. .env에서 false로 바꾸면 실제 분석을 한다.
       - MOCK_DOCUMENTS=${MOCK_DOCUMENTS:-true}
+      # F-21 자동 삭제 보관 시간·점검 주기(밀리초). .env에서 바꿀 수 있다(기본값은
+      # application.yml과 동일: 24시간 보관, 30초마다 점검).
+      - DOCUMENT_RETENTION_MS=${DOCUMENT_RETENTION_MS:-86400000}
+      - DOCUMENT_RETENTION_SWEEP_MS=${DOCUMENT_RETENTION_SWEEP_MS:-30000}
     depends_on:
       - ai
 

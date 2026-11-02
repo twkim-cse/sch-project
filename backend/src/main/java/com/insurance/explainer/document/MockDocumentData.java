@@ -2,8 +2,6 @@ package com.insurance.explainer.document;
 
 import com.insurance.explainer.structure.Clause;
 
-import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
 import java.util.List;
 
 /**
@@ -16,7 +14,8 @@ final class MockDocumentData {
     private MockDocumentData() {
     }
 
-    static DocumentRecord ready(String documentId) {
+    /** pending의 documentId·expiresAt(F-21 보관 기한)을 그대로 이어받아 READY로 만든다. */
+    static DocumentRecord ready(DocumentRecord pending) {
         List<RiderInfo> riders = List.of(new RiderInfo("rider01", "암진단 특별약관", 85));
         Clause clause = new Clause(
                 "rider01-art5-p2",
@@ -29,7 +28,6 @@ final class MockDocumentData {
                 false,
                 "암보장개시일은 계약일부터 그 날을 포함하여 90일이 지난날의 다음날로 합니다."
         ); // clauseId, riderId, section, article, articleTitle, paragraph, page, fromTable, text
-        OffsetDateTime expiresAt = OffsetDateTime.now(ZoneOffset.ofHours(9)).plusHours(24);
-        return DocumentRecord.ready(documentId, 212, riders, List.of(clause), expiresAt);
+        return pending.withReady(212, riders, List.of(clause));
     }
 }

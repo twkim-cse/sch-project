@@ -54,7 +54,7 @@ class AnalysisServiceTest {
 
     @Test
     void 문서가_READY가_아니면_NOT_READY() {
-        documentStore.save(DocumentRecord.pending("doc-1"));
+        documentStore.save(DocumentRecord.pending("doc-1", null));
         StartRequest request = new StartRequest("doc-1", List.of(), false);
 
         assertThatThrownBy(() -> service.start(request))
@@ -311,6 +311,7 @@ class AnalysisServiceTest {
                         "입원급부금의 지급", "제1항", 121, false,
                         "질병으로 4일 이상 계속 입원하였을 때 지급합니다.")
         );
-        documentStore.save(DocumentRecord.ready("doc-1", 212, riders, clauses, OffsetDateTime.now()));
+        documentStore.save(DocumentRecord.pending("doc-1", OffsetDateTime.now().plusHours(24))
+                .withReady(212, riders, clauses));
     }
 }
