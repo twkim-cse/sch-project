@@ -192,25 +192,57 @@ class ExtractResponse(BaseModel):
     extractions: list[Extraction]
 
 
+def normalize_quote_whitespace(text):
+    # Apply the same whitespace-only rule to both sides; never rewrite content.
+    return re.sub(r"\s+", " ", text)
+
+
+def log_extraction_counts(returned, accepted, reasons, returned_items, accepted_items):
+    logger.info("Gemini extract validation counts=%s", json.dumps({
+        "returned_count": returned, "accepted_count": accepted,
+        "excluded_count": returned - accepted if returned is not None else None,
+        "excluded_reasons": reasons, "returned_by_check_item": returned_items,
+        "accepted_by_check_item": accepted_items,
+    }, sort_keys=True))
+
+
 def validate_extractions(payload, req: ExtractRequest):
+    returned_items = {str(i): 0 for i in range(1, 7)}
+    accepted_items = dict(returned_items)
+    reasons = {}
     if not isinstance(payload, dict) or not isinstance(payload.get("extractions"), list):
+        log_extraction_counts(None, 0, {"invalid_response_structure": 1}, returned_items, accepted_items)
         raise ValueError("Invalid extraction response structure")
-    clauses = {clause.clause_id: clause.text for clause in req.clauses}
+    clauses = {clause.clause_id: normalize_quote_whitespace(clause.text) for clause in req.clauses}
     results = []
     seen = set()
     for raw in payload["extractions"]:
+        number = raw.get("check_item") if isinstance(raw, dict) else None
+        if type(number) is int and 1 <= number <= 6:
+            returned_items[str(number)] += 1
         try:
             item = Extraction.model_validate(raw)
         except ValueError:
+            reasons["invalid_extraction_structure"] = reasons.get("invalid_extraction_structure", 0) + 1
             continue
-        if item.check_item not in req.check_items or item.clause_id not in clauses:
+        normalized_quote = normalize_quote_whitespace(item.quote)
+        reason = None
+        if item.clause_id not in clauses:
+            reason = "unknown_clause_id"
+        elif item.check_item not in req.check_items:
+            reason = "unrequested_check_item"
+        elif not normalized_quote.strip() or normalized_quote not in clauses[item.clause_id]:
+            reason = "quote_mismatch"
+        key = (item.check_item, item.clause_id, normalized_quote)
+        if reason is None and key in seen:
+            reason = "duplicate_extraction"
+        if reason:
+            reasons[reason] = reasons.get(reason, 0) + 1
             continue
-        if not item.quote.strip() or item.quote not in clauses[item.clause_id]:
-            continue
-        key = (item.check_item, item.clause_id, item.quote)
-        if key not in seen:
-            results.append(item)
-            seen.add(key)
+        results.append(item)  # Return the AI quote unchanged; normalization is comparison-only.
+        seen.add(key)
+        accepted_items[str(item.check_item)] += 1
+    log_extraction_counts(len(payload["extractions"]), len(results), reasons, returned_items, accepted_items)
     return ExtractResponse(extractions=results)
 
 
@@ -704,7 +736,13 @@ def extract_document(req: ExtractRequest):
             ),
         )
         stage = "response_parsing"
-        result = validate_extractions(json.loads(response.text), req)
+        try:
+            payload = json.loads(response.text)
+        except (ValueError, TypeError):
+            zero_items = {str(i): 0 for i in range(1, 7)}
+            log_extraction_counts(None, 0, {"invalid_json": 1}, zero_items, zero_items)
+            raise
+        result = validate_extractions(payload, req)
         logger.info("Gemini extract succeeded elapsed_ms=%d", (time.monotonic() - started) * 1000)
         return result
     except Exception as exc:

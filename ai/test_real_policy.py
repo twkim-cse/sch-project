@@ -29,6 +29,10 @@ def nonblank(value):
     return isinstance(value, str) and bool(value.strip())
 
 
+def normalize_quote_whitespace(text):
+    return re.sub(r"\s+", " ", text)
+
+
 def validate_response(api, payload, data):
     failures = []
     metrics = {}
@@ -51,7 +55,8 @@ def validate_response(api, payload, data):
                      and type(row.get("check_item")) is int and 1 <= row["check_item"] <= 6
                      and row["check_item"] in payload["check_items"]
                      and isinstance(row.get("clause_id"), str) and nonblank(row.get("quote")))
-            original = valid and row["clause_id"] in sources and row["quote"] in sources[row["clause_id"]]
+            original = (valid and row["clause_id"] in sources
+                        and normalize_quote_whitespace(row["quote"]) in normalize_quote_whitespace(sources[row["clause_id"]]))
             quotes.append({"result_index": index, "valid": bool(original)})
             if not original:
                 failures.append("invalid_extraction_" + str(index))
