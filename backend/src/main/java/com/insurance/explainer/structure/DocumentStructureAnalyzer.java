@@ -325,11 +325,36 @@ public class DocumentStructureAnalyzer {
             throw new StructureAnalysisException("조항 구조를 인식하지 못했습니다.");
         }
 
+        List<Clause> dedupedClauses = deduplicateClauseIds(clauses);
+
         List<RiderRange> usedRiders = riders.values().stream()
-                .filter(r -> clauses.stream().anyMatch(c -> r.riderId().equals(c.riderId())))
+                .filter(r -> dedupedClauses.stream().anyMatch(c -> r.riderId().equals(c.riderId())))
                 .toList();
 
-        return new StructureAnalysisResult(clauses, usedRiders);
+        return new StructureAnalysisResult(dedupedClauses, usedRiders);
+    }
+
+    /**
+     * 인용된 외부 법령·전환대상계약 조문처럼 본문과 똑같은 모양("제2조", "제3조")의
+     * 조 번호를 자체적으로 가진 글이 섞여 있으면, 현재 조보다 번호가 크다는 이유로
+     * 새 조로 오인되어 clause_id가 겹칠 수 있다(제1절 일반조항·일부 특별약관에서
+     * 실제로 발생). AI 서버는 clause_id가 요청 안에서 유일해야 한다고 요구하므로,
+     * 그런 오인으로 생긴 겹침은 뒤에 나온 조항에 구분 접미사를 붙여 유일하게 만든다.
+     */
+    private List<Clause> deduplicateClauseIds(List<Clause> clauses) {
+        Map<String, Integer> seenCounts = new LinkedHashMap<>();
+        List<Clause> result = new ArrayList<>(clauses.size());
+        for (Clause c : clauses) {
+            int occurrence = seenCounts.merge(c.clauseId(), 1, Integer::sum);
+            if (occurrence == 1) {
+                result.add(c);
+            } else {
+                String dedupedId = c.clauseId() + "-dup" + occurrence;
+                result.add(new Clause(dedupedId, c.riderId(), c.section(), c.article(),
+                        c.articleTitle(), c.paragraph(), c.page(), c.fromTable(), c.text()));
+            }
+        }
+        return result;
     }
 
     /**
