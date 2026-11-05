@@ -12,8 +12,8 @@ import java.util.regex.Pattern;
 /**
  * F-04 문서 읽기·구조 분석.
  * <p>
- * 쪽 번호가 붙은 글자(F-02에서 추출된 {@link PageText})를 받아 주계약·특약 범위와
- * 관·조·항 번호를 인식해 조항({@link Clause}) 단위로 분할한다.
+ * 쪽 번호가 붙은 글자(F-02에서 추출된 {@link PageText})를 받아 절·관·보장 항목·특약
+ * 계층과 조·항 번호를 인식해 조항({@link Clause}) 단위로 분할한다.
  * 조 번호를 하나도 인식하지 못하면 분석을 중단하고 {@link StructureAnalysisException}을 던진다.
  */
 @Component
@@ -32,9 +32,30 @@ public class DocumentStructureAnalyzer {
     private static final Pattern ARTICLE =
             Pattern.compile("^제(\\d+)조(?!\\s*제\\d+항)(\\s*\\(([^)]*)\\))?");
 
-    // 원문자 ①~⑳ 로 시작하는 항
+    // 제1절 일반조항 / 제2절 보통약관의 보장
+    private static final Pattern SECTION_HEADING =
+            Pattern.compile("^제\\s*(\\d+)\\s*절\\s+(.+)$");
+
+    // 제1관 목적 및 용어의 정의 / 제2관 보험금의 지급
+    private static final Pattern GWAN_HEADING =
+            Pattern.compile("^제\\s*(\\d+)\\s*관\\s+(.+)$");
+
+    // 제1장 질병 관련 특별약관 / 제2장 제도성 특별약관
+    private static final Pattern CHAPTER_HEADING =
+            Pattern.compile("^제\\s*(\\d+)\\s*장\\s+(.+)$");
+
+    // "1. 암진단비(유사암제외)【갱신계약】", "18-1. 항암약물치료비(연간1회한)" 처럼
+    // 번호(+세부번호) + 제목으로 보장/특약 항목을 표시하는 줄. 본문 중 호("1. 피보
+    // 험자가...")와 모양이 같으므로, 뒤이어 제1조가 나오는지 보고 구분한다
+    // (isCoverageItemHeading).
+    private static final Pattern COVERAGE_HEADING =
+            Pattern.compile("^(\\d+(?:-\\d+)?)\\.\\s*(\\S.*)$");
+
+    // 원문자 ①~⑳ 로 시작하는 항. 실제 PDF에서는 글꼴이 깨져 전부 비공개영역 문자
+    // U+F000 한 글자로 추출되므로 그 문자도 항 시작으로 인식한다. 어느 쪽이든 조
+    // 안에서 나온 순서대로 제1항, 제2항 ... 으로 번호를 매긴다.
     private static final Pattern CIRCLED_PARAGRAPH =
-            Pattern.compile("^([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])");
+            Pattern.compile("^([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|)");
 
     // "1. ", "2. " 처럼 숫자+마침표로 항을 표시하는 특약용. 같은 조 안에서 원문자 항을
     // 이미 썼다면(하위 목록 등과 구분하기 위해) 더는 새 항 표시로 보지 않는다.
@@ -44,6 +65,10 @@ public class DocumentStructureAnalyzer {
     // 쪽마다 반복되는 "- 3 -", "3", "3 / 9" 같은 쪽 번호만 있는 줄
     private static final Pattern PAGE_NUMBER_ONLY =
             Pattern.compile("^-?\\s*\\d{1,4}\\s*-?$|^\\d+\\s*/\\s*\\d+$");
+
+    // 목차 항목 끝에 붙는 "····72" 같은 가운뎃점/마침표 리더 + 쪽 번호. 목차의 조
+    // 항목과, 본문에 실제로 나오는 같은 번호의 조를 구분하는 기준으로 쓴다.
+    private static final Pattern DOT_LEADER_PAGE_REF = Pattern.compile("[·.]{2,}\\s*\\d{1,4}\\s*$");
 
     private static final String CIRCLED_DIGITS = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳";
 
@@ -57,66 +82,199 @@ public class DocumentStructureAnalyzer {
         String currentSection = MAIN_SECTION;
         int riderSeq = 0;
 
+        String sectionTitle = null; // 제N절 ...
+        String gwanTitle = null;    // 제N관 ...
+        String chapterTitle = null; // 제N장 ... (특별약관 영역 안에서만 쓰인다)
+        String itemTitle = null;    // 보장/특약 항목 제목 (번호 + 제목)
+        int itemSeq = 0;            // 0이면 보장 항목 영역 밖. main 범위 clauseId 충돌을 막는다.
+        int nextItemSeq = 0;
+        boolean inRiderRegion = false; // "특별약관" 영역에 들어섰는지
+
         String currentArticleNo = null;
+        int currentArticleNum = 0; // 조 안내문 안의 "제2조" 등 다른 조 번호 인용과 실제 다음 조를 구분한다.
         String currentArticleTitle = null;
         String currentParagraphNo = null; // null이면 "본문"(항 구분 없음)
+        int circledSeqInArticle = 0; // 조 안에서 원문자/마커 항이 나온 순서
         boolean circledUsedInArticle = false;
         int currentClausePage = 0;
         StringBuilder buffer = new StringBuilder();
 
         boolean inToc = false;
+        boolean skippingSidebar = false;
 
         for (int i = 0; i < lines.size(); i++) {
             Line line = lines.get(i);
             String text = line.text();
 
-            if (!inToc && TOC_MARKER.equals(text)) {
+            if (!inToc && text.replaceAll("\\s+", "").equals(TOC_MARKER)) {
                 inToc = true;
                 continue;
             }
 
-            boolean isHeading = RIDER_HEADING.matcher(text).matches() || ARTICLE.matcher(text).find();
-
             if (inToc) {
-                if (isHeading) {
-                    Line next = i + 1 < lines.size() ? lines.get(i + 1) : null;
-                    boolean nextIsHeading = next != null
-                            && (RIDER_HEADING.matcher(next.text()).matches() || ARTICLE.matcher(next.text()).find());
-                    if (nextIsHeading || next == null) {
-                        // 목차 안의 또 다른 항목일 뿐이다. 상태를 바꾸지 않고 건너뛴다.
+                // 목차 항목은 "제1절 일반조항··········72", "제1조(목적) ·····72"
+                // 처럼 절·관·조 항목도 전부 가운뎃점 리더 + 쪽 번호로 끝난다. 실제
+                // 본문의 절·관 제목(제1절 일반조항, 제1관 목적 및 용어의 정의)은
+                // 리더가 없으므로 그 자리에서 바로 목차를 끝내고 처리한다.
+                boolean isRealSectionOrGwan = looksLikeHeadingLine(text)
+                        && (SECTION_HEADING.matcher(text).matches() || GWAN_HEADING.matcher(text).matches())
+                        && !DOT_LEADER_PAGE_REF.matcher(text).find();
+                if (isRealSectionOrGwan) {
+                    inToc = false;
+                    // 이 줄부터는 평소처럼 처리한다. 아래로 흐른다.
+                } else {
+                    // 목차의 "제1조"는 본문처럼 계속 다른 목차 항목(절·관·조·특약·
+                    // 보장 항목 또는 리더 줄)으로 이어지므로, 리더가 없는 "제1조"를
+                    // 만나도 바로 다음 줄이 또 목차 항목 모양이면 아직 목차 안이라고
+                    // 본다. 다음 줄이 실제 본문일 때만 목차가 끝난다.
+                    Matcher firstArticleMatcher = ARTICLE.matcher(text);
+                    boolean isFirstArticleCandidate = firstArticleMatcher.find()
+                            && "1".equals(firstArticleMatcher.group(1))
+                            && !DOT_LEADER_PAGE_REF.matcher(text).find();
+                    if (isFirstArticleCandidate) {
+                        Line next = i + 1 < lines.size() ? lines.get(i + 1) : null;
+                        if (next != null && looksLikeTocChainLine(next.text())) {
+                            continue;
+                        }
+                        inToc = false;
+                        // 이 줄(실제 제1조)부터는 평소처럼 처리한다. 아래로 흐른다.
+                    } else {
                         continue;
                     }
-                    // 다음 줄이 실제 본문이면 목차가 끝난 것이다. 이 줄부터 평소처럼 처리한다.
-                    inToc = false;
+                }
+            }
+
+            if (isSidebarHeader(text)) {
+                skippingSidebar = true;
+                continue;
+            }
+            if (skippingSidebar) {
+                if (isSidebarResumePoint(text, currentArticleNum, lines, i)) {
+                    skippingSidebar = false;
                 } else {
-                    // 목차의 설명 글·쪽 번호 등. 건너뛴다.
                     continue;
                 }
+            }
+
+            Matcher sectionMatcher = SECTION_HEADING.matcher(text);
+            if (!inRiderRegion && looksLikeHeadingLine(text) && sectionMatcher.matches()) {
+                clauses.addAll(flush(currentRiderId, currentSection, currentArticleNo,
+                        currentArticleTitle, currentParagraphNo, currentClausePage, buffer,
+                        circledSeqInArticle, itemSeq));
+                sectionTitle = "제" + sectionMatcher.group(1) + "절 " + sectionMatcher.group(2).strip();
+                gwanTitle = null;
+                itemTitle = null;
+                itemSeq = 0;
+                currentSection = sectionTitle;
+                currentArticleNo = null;
+                currentArticleNum = 0;
+                currentArticleTitle = null;
+                currentParagraphNo = null;
+                circledUsedInArticle = false;
+                circledSeqInArticle = 0;
+                continue;
+            }
+
+            Matcher gwanMatcher = GWAN_HEADING.matcher(text);
+            if (!inRiderRegion && looksLikeHeadingLine(text) && gwanMatcher.matches()) {
+                clauses.addAll(flush(currentRiderId, currentSection, currentArticleNo,
+                        currentArticleTitle, currentParagraphNo, currentClausePage, buffer,
+                        circledSeqInArticle, itemSeq));
+                gwanTitle = "제" + gwanMatcher.group(1) + "관 " + gwanMatcher.group(2).strip();
+                itemTitle = null;
+                itemSeq = 0;
+                currentSection = sectionTitle == null ? gwanTitle : sectionTitle + " / " + gwanTitle;
+                currentArticleNo = null;
+                currentArticleNum = 0;
+                currentArticleTitle = null;
+                currentParagraphNo = null;
+                circledUsedInArticle = false;
+                circledSeqInArticle = 0;
+                continue;
+            }
+
+            Matcher chapterMatcher = CHAPTER_HEADING.matcher(text);
+            if (looksLikeHeadingLine(text) && chapterMatcher.matches()) {
+                clauses.addAll(flush(currentRiderId, currentSection, currentArticleNo,
+                        currentArticleTitle, currentParagraphNo, currentClausePage, buffer,
+                        circledSeqInArticle, itemSeq));
+                inRiderRegion = true;
+                currentRiderId = null;
+                chapterTitle = "제" + chapterMatcher.group(1) + "장 " + chapterMatcher.group(2).strip();
+                itemTitle = null;
+                itemSeq = 0;
+                currentSection = chapterTitle;
+                currentArticleNo = null;
+                currentArticleNum = 0;
+                currentArticleTitle = null;
+                currentParagraphNo = null;
+                circledUsedInArticle = false;
+                circledSeqInArticle = 0;
+                continue;
             }
 
             Matcher riderMatcher = RIDER_HEADING.matcher(text);
             if (riderMatcher.matches()) {
                 clauses.addAll(flush(currentRiderId, currentSection, currentArticleNo,
-                        currentArticleTitle, currentParagraphNo, currentClausePage, buffer));
+                        currentArticleTitle, currentParagraphNo, currentClausePage, buffer,
+                        circledSeqInArticle, itemSeq));
+                inRiderRegion = true;
                 riderSeq++;
                 currentRiderId = "rider%02d".formatted(riderSeq);
                 currentSection = text;
+                itemTitle = null;
+                itemSeq = 0;
                 currentArticleNo = null;
+                currentArticleNum = 0;
                 currentArticleTitle = null;
                 currentParagraphNo = null;
                 circledUsedInArticle = false;
+                circledSeqInArticle = 0;
                 riders.put(currentRiderId, new RiderRange(currentRiderId, text, line.page()));
+                continue;
+            }
+
+            Matcher coverageMatcher = COVERAGE_HEADING.matcher(text);
+            if (coverageMatcher.matches() && isCoverageItemHeading(lines, i)) {
+                clauses.addAll(flush(currentRiderId, currentSection, currentArticleNo,
+                        currentArticleTitle, currentParagraphNo, currentClausePage, buffer,
+                        circledSeqInArticle, itemSeq));
+                itemTitle = text;
+                currentArticleNo = null;
+                currentArticleNum = 0;
+                currentArticleTitle = null;
+                currentParagraphNo = null;
+                circledUsedInArticle = false;
+                circledSeqInArticle = 0;
+
+                if (inRiderRegion) {
+                    // 특별약관 영역의 번호 붙은 항목(위암 진단비 특약 등)은 각자
+                    // 하나의 특약으로 취급해 clause_id가 겹치지 않게 한다.
+                    riderSeq++;
+                    currentRiderId = "rider%02d".formatted(riderSeq);
+                    itemSeq = 0;
+                    currentSection = chapterTitle == null ? itemTitle : chapterTitle + " / " + itemTitle;
+                    riders.put(currentRiderId, new RiderRange(currentRiderId, itemTitle, line.page()));
+                } else {
+                    // 보통약관의 보장 항목: 조 번호가 항목마다 제1조부터 다시 시작되므로
+                    // main 범위 clauseId에 항목 구간 번호를 섞어 넣는다.
+                    itemSeq = ++nextItemSeq;
+                    currentSection = sectionTitle == null ? itemTitle : sectionTitle + " / " + itemTitle;
+                }
                 continue;
             }
 
             Matcher articleMatcher = ARTICLE.matcher(text);
             if (articleMatcher.find()) {
                 clauses.addAll(flush(currentRiderId, currentSection, currentArticleNo,
-                        currentArticleTitle, currentParagraphNo, currentClausePage, buffer));
+                        currentArticleTitle, currentParagraphNo, currentClausePage, buffer,
+                        circledSeqInArticle, itemSeq));
                 currentArticleNo = "제" + articleMatcher.group(1) + "조";
+                currentArticleNum = Integer.parseInt(articleMatcher.group(1));
                 currentArticleTitle = articleMatcher.group(3);
                 currentParagraphNo = null;
                 circledUsedInArticle = false;
+                circledSeqInArticle = 0;
                 currentClausePage = line.page();
                 String rest = text.substring(articleMatcher.end()).strip();
                 if (!rest.isEmpty()) {
@@ -133,32 +291,35 @@ public class DocumentStructureAnalyzer {
             Matcher circledMatcher = CIRCLED_PARAGRAPH.matcher(text);
             if (circledMatcher.find()) {
                 clauses.addAll(flush(currentRiderId, currentSection, currentArticleNo,
-                        currentArticleTitle, currentParagraphNo, currentClausePage, buffer));
-                int idx = CIRCLED_DIGITS.indexOf(circledMatcher.group(1));
-                currentParagraphNo = "제" + (idx + 1) + "항";
+                        currentArticleTitle, currentParagraphNo, currentClausePage, buffer,
+                        circledSeqInArticle, itemSeq));
+                circledSeqInArticle++;
+                currentParagraphNo = "제" + circledSeqInArticle + "항";
                 circledUsedInArticle = true;
                 currentClausePage = line.page();
-                buffer.append(text.substring(1).strip()).append(' ');
+                buffer.append(sanitizeStrayMarker(text.substring(1).strip(), circledSeqInArticle)).append(' ');
                 continue;
             }
 
             Matcher numberedMatcher = NUMBERED_PARAGRAPH.matcher(text);
             if (!circledUsedInArticle && numberedMatcher.matches()) {
                 clauses.addAll(flush(currentRiderId, currentSection, currentArticleNo,
-                        currentArticleTitle, currentParagraphNo, currentClausePage, buffer));
+                        currentArticleTitle, currentParagraphNo, currentClausePage, buffer,
+                        circledSeqInArticle, itemSeq));
                 currentParagraphNo = "제" + numberedMatcher.group(1) + "항";
                 currentClausePage = line.page();
-                buffer.append(numberedMatcher.group(2)).append(' ');
+                buffer.append(sanitizeStrayMarker(numberedMatcher.group(2), circledSeqInArticle)).append(' ');
                 continue;
             }
 
             if (buffer.isEmpty()) {
                 currentClausePage = line.page();
             }
-            buffer.append(text).append(' ');
+            buffer.append(sanitizeStrayMarker(text, circledSeqInArticle)).append(' ');
         }
         clauses.addAll(flush(currentRiderId, currentSection, currentArticleNo,
-                currentArticleTitle, currentParagraphNo, currentClausePage, buffer));
+                currentArticleTitle, currentParagraphNo, currentClausePage, buffer, circledSeqInArticle,
+                itemSeq));
 
         if (clauses.isEmpty()) {
             throw new StructureAnalysisException("조항 구조를 인식하지 못했습니다.");
@@ -172,9 +333,119 @@ public class DocumentStructureAnalyzer {
     }
 
     /**
-     * 모든 쪽의 글자를 줄 단위로 펼치면서, 쪽 번호만 있는 줄과 모든(또는 대부분의) 쪽
-     * 맨 앞에 똑같이 반복되는 머리글 줄을 걸러낸다. 제목/조 패턴과 일치하는 줄은
-     * 머리글로 보지 않는다(실제 조항 제목이 반복 빈도만으로 걸러지지 않도록).
+     * 목차 안에서 다음 줄도 목차 항목처럼 보이는지 판단한다(조·절·관·특약 제목,
+     * 번호 붙은 보장/특약 항목, 가운뎃점 리더 + 쪽 번호로 끝나는 줄). 목차는 이런
+     * 줄들이 쭉 이어지다가 실제 본문을 만나면 끝난다.
+     */
+    private boolean looksLikeTocChainLine(String text) {
+        return ARTICLE.matcher(text).find()
+                || RIDER_HEADING.matcher(text).matches()
+                || COVERAGE_HEADING.matcher(text).matches()
+                || DOT_LEADER_PAGE_REF.matcher(text).find()
+                || (looksLikeHeadingLine(text) && (SECTION_HEADING.matcher(text).matches()
+                        || GWAN_HEADING.matcher(text).matches()
+                        || CHAPTER_HEADING.matcher(text).matches()));
+    }
+
+    /**
+     * 사이드바(유의사항·예시·용어풀이·관련법규)를 건너뛰다가 본문으로 되돌아갈
+     * 지점을 찾는다. 사이드바로 인용되는 법령 조문도 "제2조", "제3조" 같은 자기
+     * 번호를 가지므로, 단순 ARTICLE 패턴 일치만으로는 복귀 지점을 알 수 없다.
+     * 지금 조보다 번호가 큰 조("제N+1조" 이상)만 실제 복귀로 본다. 절·관·특약·
+     * 보장 항목 제목이나, 원래 조로 돌아오는 항 마커도 복귀 지점이다.
+     */
+    private boolean isSidebarResumePoint(String text, int currentArticleNum, List<Line> lines, int i) {
+        if (RIDER_HEADING.matcher(text).matches()) {
+            return true;
+        }
+        if (looksLikeHeadingLine(text) && (SECTION_HEADING.matcher(text).matches()
+                || GWAN_HEADING.matcher(text).matches() || CHAPTER_HEADING.matcher(text).matches())) {
+            return true;
+        }
+        if (CIRCLED_PARAGRAPH.matcher(text).find()) {
+            return true;
+        }
+        if (COVERAGE_HEADING.matcher(text).matches() && isCoverageItemHeading(lines, i)) {
+            return true;
+        }
+        Matcher articleMatcher = ARTICLE.matcher(text);
+        if (articleMatcher.find()) {
+            return Integer.parseInt(articleMatcher.group(1)) > currentArticleNum;
+        }
+        return false;
+    }
+
+    /**
+     * "제3조 제1항에 따라" 처럼 본문 중간에 절·관·장 번호가 다른 문장에 섞여 나오는
+     * 경우를 배제하기 위한 공통 조건. 실제 절·관·장 제목은 짧고 서술형 문장으로
+     * 끝나지 않는다.
+     */
+    private boolean looksLikeHeadingLine(String text) {
+        return text.length() <= 40 && !endsLikeSentence(text);
+    }
+
+    private boolean endsLikeSentence(String text) {
+        return text.endsWith("다.") || text.endsWith("요.") || text.endsWith("다") || text.endsWith("습니다.");
+    }
+
+    /**
+     * "1. 암진단비(유사암제외)【갱신계약】" 같은 보장/특약 항목 제목과, 조 본문 안의
+     * 호("1. 피보험자가 고의로...")를 구분한다. 항목 제목 뒤에는 (안내 괄호 줄을 거쳐)
+     * 반드시 제1조가 나온다는 점을 이용한다.
+     */
+    private boolean isCoverageItemHeading(List<Line> lines, int i) {
+        for (int j = i + 1; j < Math.min(i + 5, lines.size()); j++) {
+            String t = lines.get(j).text();
+            Matcher articleMatcher = ARTICLE.matcher(t);
+            if (articleMatcher.find()) {
+                return "1".equals(articleMatcher.group(1));
+            }
+            if (RIDER_HEADING.matcher(t).matches()
+                    || COVERAGE_HEADING.matcher(t).matches()
+                    || (looksLikeHeadingLine(t) && (SECTION_HEADING.matcher(t).matches()
+                            || GWAN_HEADING.matcher(t).matches() || CHAPTER_HEADING.matcher(t).matches()))) {
+                // 분명히 다른 구조 표지가 먼저 나왔으니 이 줄은 보장/특약 항목
+                // 제목이 아니다.
+                return false;
+            }
+            // 안내 괄호 줄, 제목이 줄바꿈되어 이어지는 줄("암진단비Ⅱ【갱신계약】
+            // (【갱신계약】은...)")은 계속 다음 줄을 본다.
+        }
+        return false;
+    }
+
+    // "유 의 사 항", "예 시", "용 어 풀 이", "관 련 법 규" 처럼 글자 사이에 공백이
+    // 섞여 들어가는 사이드바 머리글. 다음 구조 마커(조·항·절·관·장·특약 제목)가 나올
+    // 때까지의 내용을 본문에서 제외한다.
+    private boolean isSidebarHeader(String text) {
+        String normalized = text.replaceAll("\\s+", "");
+        return normalized.startsWith("유의사항")
+                || normalized.startsWith("예시")
+                || normalized.startsWith("용어풀이")
+                || normalized.startsWith("관련법규");
+    }
+
+    /**
+     * 글꼴 깨짐으로 남은 비공개영역 문자(U+F000)가 항 마커 처리 이후에도 줄 안에
+     * 남아 있으면, 그 조에서 지금까지 나온 항 번호에 해당하는 원문자로 바꾼다. 아직
+     * 항이 시작되지 않았다면(순서 0) 그냥 제거한다.
+     */
+    private String sanitizeStrayMarker(String s, int circledSeqInArticle) {
+        if (s.indexOf('') < 0) {
+            return s;
+        }
+        String replacement = circledSeqInArticle >= 1 && circledSeqInArticle <= CIRCLED_DIGITS.length()
+                ? String.valueOf(CIRCLED_DIGITS.charAt(circledSeqInArticle - 1))
+                : "";
+        return s.replace("", replacement);
+    }
+
+    /**
+     * 모든 쪽의 글자를 줄 단위로 펼치면서, 쪽 번호만 있는 줄, 세로 사이드바 머리글
+     * (쪽 가장자리에 한 글자씩 세로로 찍히는 "공/통/사/항/..." 같은 탭 라벨)과, 모든
+     * (또는 대부분의) 쪽 맨 앞에 똑같이 반복되는 머리글 줄을 걸러낸다. 제목/조 패턴과
+     * 일치하는 줄은 머리글로 보지 않는다(실제 조항 제목이 반복 빈도만으로 걸러지지
+     * 않도록).
      */
     private List<Line> flattenAndCleanLines(List<PageText> pages) {
         List<List<String>> perPage = new ArrayList<>();
@@ -187,7 +458,7 @@ public class DocumentStructureAnalyzer {
                 }
                 pageLines.add(stripped);
             }
-            perPage.add(pageLines);
+            perPage.add(stripVerticalSidebar(pageLines));
         }
 
         String headerNoise = findRepeatedEdgeLine(perPage, true);
@@ -205,6 +476,22 @@ public class DocumentStructureAnalyzer {
             }
         }
         return result;
+    }
+
+    /**
+     * 쪽 맨 앞에 한 글자씩 세로로 찍히는 탭 라벨("공","통","사","항", ...)을 걷어낸다.
+     * 실제 조항 본문에서는 이렇게 짧게(길이 1) 연속으로 나오는 줄이 없으므로, 3줄
+     * 이상 이어지는 한 글자짜리 줄 묶음만 제거한다.
+     */
+    private List<String> stripVerticalSidebar(List<String> pageLines) {
+        int idx = 0;
+        while (idx < pageLines.size() && pageLines.get(idx).codePointCount(0, pageLines.get(idx).length()) == 1) {
+            idx++;
+        }
+        if (idx < 3) {
+            return pageLines;
+        }
+        return pageLines.subList(idx, pageLines.size());
     }
 
     private String findRepeatedEdgeLine(List<List<String>> perPage, boolean fromStart) {
@@ -237,7 +524,7 @@ public class DocumentStructureAnalyzer {
 
     private List<Clause> flush(String riderId, String section, String articleNo,
                                 String articleTitle, String paragraphNo, int page,
-                                StringBuilder buffer) {
+                                StringBuilder buffer, int circledSeqInArticle, int itemSeq) {
         if (articleNo == null || buffer.isEmpty()) {
             buffer.setLength(0);
             return List.of();
@@ -248,7 +535,12 @@ public class DocumentStructureAnalyzer {
             return List.of();
         }
 
-        String scope = riderId == null ? "main" : riderId;
+        // 보통약관의 보장 항목은 조 번호가 항목마다 제1조부터 다시 시작되므로, main
+        // 범위 clauseId에 항목 구간 번호를 섞어 겹치지 않게 한다(특약은 riderId 자체가
+        // 구간이므로 별도 번호가 필요 없다).
+        String scope = riderId == null
+                ? (itemSeq > 0 ? "main-item" + itemSeq : "main")
+                : riderId;
         String articleNum = articleNo.replaceAll("\\D", "");
         String clauseId = scope + "-art" + articleNum
                 + (paragraphNo == null ? "" : "-p" + paragraphNo.replaceAll("\\D", ""));
