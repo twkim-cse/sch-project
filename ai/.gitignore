@@ -19,3 +19,13 @@ test_data/README_real_policy_validation.md
 *.zip
 *.7z
 *.rar
+
+# Local logs and tool output, including future diagnostics.
+*.log
+*.tmp
+*.bak
+tmp/
+output/
+.codex/
+.agents/
+.aws/

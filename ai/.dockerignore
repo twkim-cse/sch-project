@@ -1,0 +1,10 @@
+# Allow only files required by the runtime image.
+**
+!Dockerfile
+!pyproject.toml
+!app/
+!app/*.py
+!app.py
+!extract_planning.py
+!extract_recheck.py
+!refund_validation.py
