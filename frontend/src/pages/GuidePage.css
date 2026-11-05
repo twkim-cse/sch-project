@@ -1,0 +1,153 @@
+.guide-page {
+  position: relative;
+  min-height: 984px;
+  padding-top: 94px;
+}
+
+.guide-page > h1 {
+  margin: 0 0 0 267px;
+  font-size: 48px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.guide-steps {
+  display: grid;
+  grid-template-columns: repeat(2, 344px);
+  gap: 11px 32px;
+  width: 720px;
+  margin: 93.4px 0 0 59px;
+  padding: 0;
+  list-style: none;
+}
+
+.guide-step {
+  min-width: 0;
+  min-height: 240px;
+  padding: 32px 37px 0;
+  font-weight: 900;
+}
+
+.guide-step__number {
+  display: block;
+  font-size: 48px;
+  line-height: 1.2;
+}
+
+.guide-step h2 {
+  margin: 0.4px 0 0;
+  color: var(--color-orange);
+  font-size: 14px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.guide-step p {
+  margin: 43.2px 0 0;
+  color: rgb(0 0 0 / 70%);
+  font-size: 14px;
+  line-height: 1.2;
+  word-break: keep-all;
+}
+
+.guide-page__image {
+  position: absolute;
+  top: 61px;
+  left: 41.09375%;
+  width: 52.291667%;
+  height: auto;
+  opacity: 0.7;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.guide-page .guide-page__action {
+  display: flex;
+  width: max-content;
+  min-width: 194px;
+  min-height: 50px;
+  margin: 111px 0 87px 286px;
+  padding: 10px 24px;
+  border: 1px solid #fff;
+  border-radius: 80px;
+  box-shadow: none;
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+@media (max-width: 1500px) {
+  .guide-page {
+    min-height: 0;
+    padding: 64px 32px 80px;
+  }
+
+  .guide-page > h1 {
+    margin: 0;
+  }
+
+  .guide-page__layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+    align-items: center;
+    gap: 24px;
+  }
+
+  .guide-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px;
+    width: 100%;
+    margin: 64px 0 0;
+  }
+
+  .guide-step {
+    padding: 16px 0;
+  }
+
+  .guide-page__image {
+    position: static;
+    width: 100%;
+  }
+
+  .guide-page .guide-page__action {
+    margin: 48px 0 0;
+  }
+}
+
+@media (max-width: 900px) {
+  .guide-page {
+    padding-inline: 24px;
+  }
+
+  .guide-page > h1 {
+    font-size: 36px;
+  }
+
+  .guide-page__layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .guide-page__image {
+    justify-self: center;
+    max-width: 560px;
+  }
+}
+
+@media (max-width: 500px) {
+  .guide-steps {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    margin-top: 40px;
+  }
+
+  .guide-step {
+    min-height: 0;
+    padding-block: 24px;
+  }
+
+  .guide-step p {
+    margin-top: 24px;
+    font-size: 16px;
+    line-height: 1.5;
+  }
+}

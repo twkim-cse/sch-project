@@ -1,0 +1,20 @@
+.page-placeholder {
+  width: min(100%, 1440px);
+  margin: 80px auto;
+  padding: 0 32px;
+}
+
+.page-placeholder h1 {
+  margin: 0;
+  font-size: clamp(28px, 3vw, 44px);
+  font-weight: 900;
+  line-height: 1.4;
+}
+
+.page-placeholder p {
+  margin: 24px 0 32px;
+  color: var(--color-secondary-text);
+  font-size: 18px;
+  line-height: 1.6;
+  word-break: keep-all;
+}

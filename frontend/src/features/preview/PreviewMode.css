@@ -1,0 +1,15 @@
+.preview-navigation { color: #173454; font-family: inherit; font-size: 12px; line-height: 1.5; text-align: left; }
+.preview-navigation--global { position: fixed; right: 12px; bottom: 12px; z-index: 100; width: min(266px, calc(100vw - 24px)); }
+.preview-navigation--global:not(:has(nav)) { width: auto; max-width: calc(100vw - 24px); }
+body:has(dialog[open]) .preview-navigation--global { display: none; }
+.preview-navigation__toggle { display: flex; align-items: center; justify-content: space-between; gap: 24px; width: 100%; padding: 9px 14px; border: 1px solid #b6cce0; border-radius: 10px; background: #f1f7ff; color: #173454; font: inherit; cursor: pointer; box-shadow: 0 2px 10px rgb(0 0 0 / 8%); }
+.preview-navigation nav { display: grid; gap: 4px; max-height: min(58svh, 580px); margin-top: 6px; padding: 10px; overflow: auto; border: 1px solid #b6cce0; border-radius: 10px; background: #fff; box-shadow: 0 4px 24px rgb(0 0 0 / 10%); }
+.preview-navigation nav p { margin: 0 0 6px; color: #4e657a; font-size: 12px; opacity: 1; }
+.preview-navigation nav button, .preview-navigation nav a { padding: 6px 8px; border: 0; border-radius: 5px; background: #f7f9fc; color: #173454; font: inherit; text-align: left; text-decoration: none; cursor: pointer; }
+.preview-navigation nav button:hover, .preview-navigation nav a:hover { background: #e5f1ff; }
+.preview-navigation--modal { max-width: 300px; margin: 32px 0 0 auto; }
+.preview-tools { margin: 24px 0; padding: 16px; border: 1px dashed #8ebee9; border-radius: 12px; background: #f1f7ff; color: #173454; font-size: 14px; line-height: 1.6; text-align: left; }
+.preview-tools > p { margin: 0 0 8px; }
+.preview-tools button, .preview-tools select { margin: 4px; padding: 6px 10px; border: 1px solid #b6cce0; border-radius: 8px; background: #fff; color: #173454; font: inherit; cursor: pointer; }
+.preview-tools button[aria-pressed='true'] { border-color: #0088ff; background: #dcedff; }
+.preview-tools__badge { margin: 16px 0; color: #0056a6; font-size: 14px; line-height: 1.5; }

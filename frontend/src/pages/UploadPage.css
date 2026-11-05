@@ -1,0 +1,43 @@
+.upload-page { position: relative; min-height: 984px; padding: 105px 0 80px; }
+.upload-page > h1 { margin: 0 0 0 6.822917%; color: rgb(23 28 39 / 80%); font-size: 64px; font-weight: 900; line-height: 1.2; }
+.upload-page__illustration { position: absolute; top: 194px; left: 6.822917%; width: 37.395833%; height: auto; object-fit: contain; }
+.upload-panel { width: 31.614583%; margin: 28px 0 0 50.885417%; }
+.upload-panel > h2 { margin: 0; color: rgb(0 0 0 / 70%); font-size: 25px; font-weight: 700; line-height: 1.2; text-align: center; word-break: keep-all; }
+.upload-file-input { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.upload-dropzone { display: flex; flex-direction: column; align-items: center; min-height: 271px; margin-top: 65px; padding: 26px 16px 26px; border: 1px solid #c6c6c8; border-radius: 20px; background: rgb(242 242 247 / 36%); }
+.upload-dropzone--dragging { border-color: var(--color-blue); background: #eef7ff; }
+.upload-pdf-icon { display: grid; place-items: center; width: 68px; height: 68px; border-radius: 15px; background: #f2f2f7; color: #c7c7cc; font-size: 21px; font-weight: 700; }
+.upload-dropzone > p { margin: 22px 0 0; color: #4a4c4e; font-size: 16px; line-height: 1.2; text-align: center; }
+.upload-dropzone > .upload-dropzone__hint { margin-top: 29px; color: var(--color-orange); font-size: 13px; }
+.upload-dropzone > .workflow-button { min-height: 32px; margin-top: 25px; padding: 7px 18px; }
+.upload-selected-file { margin-top: 20px; padding: 16px 20px; border: 1px solid #e5e5eb; border-radius: 16px; }
+.upload-selected-file dl { display: grid; gap: 10px; margin: 0; }
+.upload-selected-file dl > div { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 12px; }
+.upload-selected-file dt { color: #727272; font-size: 13px; }
+.upload-selected-file dd { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
+.upload-panel__start { display: flex; justify-content: flex-end; margin-top: 20px; }
+.upload-panel__start .workflow-link { font-weight: 500; }
+.upload-panel__start span { font-size: 22px; }
+.upload-panel__limit { margin: 8px 0 0; color: #727272; font-size: 13px; text-align: right; }
+.upload-privacy { display: flex; align-items: center; gap: 12px; margin-top: 90px; padding: 12px 32px; }
+.upload-privacy > span { color: var(--color-blue); font-size: 25px; }
+.upload-privacy p { margin: 0; color: #464c59; font-size: 10px; line-height: 1.6; word-break: keep-all; }
+.upload-privacy p + p { margin-top: 12px; color: #858b98; font-size: 9px; }
+.upload-panel__notice { color: #727272; font-size: 14px; line-height: 1.5; }
+@media (max-width: 1200px) {
+  .upload-page { padding: 64px 32px 80px; }
+  .upload-page > h1 { margin: 0; font-size: clamp(32px, 4vw, 52px); }
+  .upload-page__illustration { top: 180px; left: 2%; width: 45%; }
+  .upload-panel { width: 48%; margin: 48px 0 0 52%; }
+  .upload-panel > h2 { font-size: 22px; }
+  .upload-dropzone { margin-top: 40px; }
+  .upload-privacy { margin-top: 48px; padding-inline: 0; }
+}
+@media (max-width: 800px) {
+  .upload-page { min-height: 0; padding: 48px 24px 64px; }
+  .upload-page__illustration { position: static; width: min(360px, 100%); margin: 24px auto; }
+  .upload-panel { width: 100%; margin: 32px 0 0; }
+  .upload-panel > h2 { font-size: 20px; }
+  .upload-privacy p { font-size: 12px; }
+  .upload-privacy p + p { font-size: 11px; }
+}
