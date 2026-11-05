@@ -1,0 +1,27 @@
+{
+  "case_id": "surgery_definition_unsupported_recognition_condition",
+  "description": "사용자가 보고한 실패 사례의 회귀 데이터. 실제 보험사 또는 PDF 출처를 주장하지 않음. 기대 검토 결과는 테스트 정답이며 모의 검토에 사용함.",
+  "item": {
+    "item_id": "definition-regression-5",
+    "check_item": 5,
+    "section": "용어 정의",
+    "article_title": "수술의 정의",
+    "quote": "이 약관에서 수술이란 치료를 직접 목적으로 의료기관에서 의사가 생체에 절단 또는 절제 등의 조작을 가하는 것을 말합니다.",
+    "retry_hint": null
+  },
+  "inappropriate_draft": {
+    "item_id": "definition-regression-5",
+    "title": "이 약관은 수술의 뜻을 정하고 있습니다.",
+    "explanation": "이 약관에서 수술이란 의료기관에서 의사가 치료를 직접 목적으로 몸을 잘라내거나 잘라내는 등의 조작을 가하는 것을 의미합니다. 진료를 받는 기관이나 의사의 행위 등 정해진 기준을 충족해야 수술로 인정될 수 있습니다."
+  },
+  "expected_review": {
+    "item_id": "definition-regression-5",
+    "review": "fail",
+    "review_reason": "explanation에 원문에 없는 내용(진료를 받는 기관이나 의사의 행위 등 정해진 기준을 충족해야 수술로 인정될 수 있습니다)이 추가되었습니다."
+  },
+  "corrected_draft_example": {
+    "item_id": "definition-regression-5",
+    "title": "이 약관은 치료를 직접 목적으로 하는 수술의 뜻을 정하고 있습니다.",
+    "explanation": "이 약관에서 수술은 의료기관에서 의사가 치료를 직접 목적으로 하는 행위를 말합니다. 그 행위는 생체에 절단 또는 절제 등의 조작을 가하는 것입니다."
+  }
+}

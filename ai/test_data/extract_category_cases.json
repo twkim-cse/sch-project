@@ -1,0 +1,13 @@
+{
+  "source_kind": "synthetic",
+  "description": "분류 기준 회귀용 가상 약관. 정답은 사람이 지정한 기대값이며 모의 응답에 사용한다. 실제 AI 분류 정확도 검증이 아니다.",
+  "cases": [
+    {"case_id": "general_exclusion", "text": "피보험자가 고의로 자신을 해친 경우 보험금을 지급하지 않습니다.", "expected_items": [1]},
+    {"case_id": "waiting_90_days", "text": "이 보장의 면책기간은 계약일부터 90일이며, 그 기간에는 해당 보장을 적용하지 않습니다.", "expected_items": [2]},
+    {"case_id": "temporary_reduction", "text": "계약일부터 1년 이내에 진단된 경우 약정 보험금의 50%를 지급합니다.", "expected_items": [2]},
+    {"case_id": "specific_condition_period", "text": "지정된 질병에 대한 부담보 기간은 계약일부터 2년입니다. 그 기간에는 해당 질병을 보장하지 않습니다.", "expected_items": [2]},
+    {"case_id": "permanent_exclusion", "text": "미용만을 목적으로 하는 수술은 보장 대상에서 제외합니다.", "expected_items": [1]},
+    {"case_id": "both_types", "text": "고의로 발생시킨 상해는 보상하지 않습니다. 별도로 지정한 신체부위의 질병은 계약일부터 1년간 보장하지 않습니다.", "expected_items": [1, 2]},
+    {"case_id": "irrelevant", "text": "이 계약의 관할법원은 계약자의 주소지를 기준으로 정합니다.", "expected_items": []}
+  ]
+}

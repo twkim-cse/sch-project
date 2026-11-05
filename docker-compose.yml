@@ -5,6 +5,8 @@ services:
       - "8001:8001"
     environment:
       - AI_MODEL_API_KEY=${AI_MODEL_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-}
 
   backend:
     build: ./backend

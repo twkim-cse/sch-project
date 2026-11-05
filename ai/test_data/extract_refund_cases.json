@@ -1,0 +1,16 @@
+{
+  "source_kind": "synthetic",
+  "description": "해약환급금 분류 기준의 가상 정답 사례. 모의 응답 처리용이며 실제 Gemini 정확도 평가가 아님.",
+  "cases": [
+    {"id":"calculation","clauses":[{"clause_id":"refund-calc","text":"해약환급금은 보험료 및 해약환급금 산출방법서에 따라 계산합니다."}],"selected_ids":["refund-calc"]},
+    {"id":"deadline","clauses":[{"clause_id":"refund-time","text":"해약환급금은 청구 접수일부터 3영업일 이내에 지급합니다."}],"selected_ids":["refund-time"]},
+    {"id":"deduction","clauses":[{"clause_id":"refund-deduct","text":"계약 해지 시 해약환급금에서 미상환 대출 원금과 이자를 차감합니다."}],"selected_ids":["refund-deduct"]},
+    {"id":"limitation","clauses":[{"clause_id":"refund-limit","text":"해약환급금 청구권은 3년간 행사하지 않으면 소멸시효가 완성됩니다."}],"selected_ids":["refund-limit"]},
+    {"id":"termination_only","clauses":[{"clause_id":"terminate","text":"회사가 파산선고를 받으면 계약자는 계약을 해지할 수 있습니다."}],"selected_ids":[]},
+    {"id":"loan_only","clauses":[{"clause_id":"loan","text":"계약자는 보험계약대출의 원금과 이자를 언제든지 상환할 수 있습니다."}],"selected_ids":[]},
+    {"id":"linked_payment","clauses":[{"clause_id":"linked-1","text":"회사가 파산선고를 받으면 계약자는 계약을 해지할 수 있습니다."},{"clause_id":"linked-2","text":"제1항에 따라 계약이 해지되면 회사는 계약자에게 해약환급금을 지급합니다."}],"selected_ids":["linked-2"]},
+    {"id":"unrelated","clauses":[{"clause_id":"venue","text":"이 계약의 관할법원은 계약자의 주소지를 기준으로 정합니다."}],"selected_ids":[]},
+    {"id":"lapse_only","clauses":[{"clause_id":"lapse","text":"계약은 정해진 기간이 지나면 효력을 잃습니다."}],"selected_ids":[]},
+    {"id":"other_right_limitation","clauses":[{"clause_id":"other-limit","text":"보험금 청구권은 3년간 행사하지 않으면 소멸시효가 완성됩니다."}],"selected_ids":[]}
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "source_kind": "synthetic",
+  "cases": [
+    {"id":"renewal_change","item":3,"text":"갱신 시 보험료가 인상되거나 인하될 수 있습니다.","selected":true},
+    {"id":"renewal_calculation","item":3,"text":"갱신계약의 보험료는 갱신 당시의 나이와 보험요율을 기준으로 다시 계산합니다.","selected":true},
+    {"id":"payment_only","item":3,"text":"보험료는 매월 정해진 날에 납입해야 합니다.","selected":false},
+    {"id":"renewal_overdue","item":3,"text":"갱신계약의 보험료를 납입하지 않으면 납입최고 기간을 정하여 독촉하고 계약을 해지할 수 있습니다.","selected":false},
+    {"id":"surgery_definition","item":5,"text":"수술 보장에서 수술이란 치료를 직접 목적으로 의사가 절단 또는 절제하는 행위를 말합니다.","selected":true},
+    {"id":"disease_definition","item":5,"text":"이 질병 보장에서 질병이란 해당 질병분류표에 명시된 질병을 말합니다.","selected":true},
+    {"id":"hospital_definition","item":5,"text":"입원급여에서 입원이란 의사가 치료가 필요하다고 인정하여 의료기관에 입실해 치료받는 것을 말합니다.","selected":true},
+    {"id":"administrative_term","item":5,"text":"이 안내에서 영업일이란 고객상담센터가 운영되는 날을 말합니다.","selected":false},
+    {"id":"refund_payment","item":6,"text":"해약환급금은 계약자의 청구를 받은 날부터 3영업일 이내 지급합니다.","selected":true},
+    {"id":"refund_deduction","item":6,"text":"해약환급금에서 미납 보험료를 공제하여 반환합니다.","selected":true},
+    {"id":"refund_limitation","item":6,"text":"해약환급금 청구권은 3년간 행사하지 않으면 소멸시효가 완성됩니다.","selected":true},
+    {"id":"loan_limit_only","item":6,"text":"계약자는 해약환급금 범위 내에서 회사가 정한 방법에 따라 보험계약대출을 받을 수 있습니다.","selected":false},
+    {"id":"loan_actual_deduction","item":6,"text":"계약 해지 시 보험계약대출 원금과 이자는 해약환급금에서 차감합니다.","selected":true}
+  ]
+}

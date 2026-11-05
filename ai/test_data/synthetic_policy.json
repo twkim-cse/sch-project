@@ -1,0 +1,147 @@
+{
+  "source_kind": "synthetic",
+  "description": "전부 테스트용 가상 문장이며 실제 보험사 약관이 아닙니다.",
+  "requests": {
+    "classify": {
+      "document_id": "fictional-policy",
+      "pages": [
+        {
+          "page": 1,
+          "text": "테스트용 가상 보험 약관\n피보험자가 고의로 자신을 해친 경우에는 보험금을 지급하지 않습니다.\n암 보장은 계약일부터 90일이 지난 다음 날부터 시작하며, 계약일부터 1년 이내에 진단되면 약정 보험금의 50%를 지급합니다.\n갱신 시 피보험자의 연령과 위험률에 따라 보험료가 인상될 수 있습니다.\n계약자는 청약서에서 질문한 사항을 사실대로 알려야 하며, 계약 후 직업이 변경되면 회사에 알려야 합니다.\n이 약관에서 수술이란 치료를 직접 목적으로 의료기관에서 의사가 생체에 절단 또는 절제 등의 조작을 가하는 것을 말합니다.\n계약을 중도 해지하면 해지환급금은 납입한 보험료보다 적거나 없을 수 있습니다."
+        }
+      ]
+    },
+    "extract": {
+      "analysis_id": "synthetic-001",
+      "check_items": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "clauses": [
+        {
+          "clause_id": "fiction-1",
+          "rider_id": null,
+          "section": "가상 테스트 약관",
+          "article": "제1조",
+          "article_title": "테스트 조항",
+          "paragraph": "제1항",
+          "page": 1,
+          "from_table": false,
+          "text": "피보험자가 고의로 자신을 해친 경우에는 보험금을 지급하지 않습니다."
+        },
+        {
+          "clause_id": "fiction-2",
+          "rider_id": null,
+          "section": "가상 테스트 약관",
+          "article": "제2조",
+          "article_title": "테스트 조항",
+          "paragraph": "제1항",
+          "page": 2,
+          "from_table": false,
+          "text": "암 보장은 계약일부터 90일이 지난 다음 날부터 시작하며, 계약일부터 1년 이내에 진단되면 약정 보험금의 50%를 지급합니다."
+        },
+        {
+          "clause_id": "fiction-3",
+          "rider_id": null,
+          "section": "가상 테스트 약관",
+          "article": "제3조",
+          "article_title": "테스트 조항",
+          "paragraph": "제1항",
+          "page": 3,
+          "from_table": false,
+          "text": "갱신 시 피보험자의 연령과 위험률에 따라 보험료가 인상될 수 있습니다."
+        },
+        {
+          "clause_id": "fiction-4",
+          "rider_id": null,
+          "section": "가상 테스트 약관",
+          "article": "제4조",
+          "article_title": "테스트 조항",
+          "paragraph": "제1항",
+          "page": 4,
+          "from_table": false,
+          "text": "계약자는 청약서에서 질문한 사항을 사실대로 알려야 하며, 계약 후 직업이 변경되면 회사에 알려야 합니다."
+        },
+        {
+          "clause_id": "fiction-5",
+          "rider_id": null,
+          "section": "가상 테스트 약관",
+          "article": "제5조",
+          "article_title": "테스트 조항",
+          "paragraph": "제1항",
+          "page": 5,
+          "from_table": false,
+          "text": "이 약관에서 수술이란 치료를 직접 목적으로 의료기관에서 의사가 생체에 절단 또는 절제 등의 조작을 가하는 것을 말합니다."
+        },
+        {
+          "clause_id": "fiction-6",
+          "rider_id": null,
+          "section": "가상 테스트 약관",
+          "article": "제6조",
+          "article_title": "테스트 조항",
+          "paragraph": "제1항",
+          "page": 6,
+          "from_table": false,
+          "text": "계약을 중도 해지하면 해지환급금은 납입한 보험료보다 적거나 없을 수 있습니다."
+        }
+      ]
+    },
+    "explain": {
+      "analysis_id": "synthetic-001",
+      "items": [
+        {
+          "item_id": "fiction-item-1",
+          "check_item": 1,
+          "section": "가상 테스트 약관",
+          "article_title": "테스트 조항",
+          "quote": "피보험자가 고의로 자신을 해친 경우에는 보험금을 지급하지 않습니다.",
+          "retry_hint": null
+        },
+        {
+          "item_id": "fiction-item-2",
+          "check_item": 2,
+          "section": "가상 테스트 약관",
+          "article_title": "테스트 조항",
+          "quote": "암 보장은 계약일부터 90일이 지난 다음 날부터 시작하며, 계약일부터 1년 이내에 진단되면 약정 보험금의 50%를 지급합니다.",
+          "retry_hint": null
+        },
+        {
+          "item_id": "fiction-item-3",
+          "check_item": 3,
+          "section": "가상 테스트 약관",
+          "article_title": "테스트 조항",
+          "quote": "갱신 시 피보험자의 연령과 위험률에 따라 보험료가 인상될 수 있습니다.",
+          "retry_hint": null
+        },
+        {
+          "item_id": "fiction-item-4",
+          "check_item": 4,
+          "section": "가상 테스트 약관",
+          "article_title": "테스트 조항",
+          "quote": "계약자는 청약서에서 질문한 사항을 사실대로 알려야 하며, 계약 후 직업이 변경되면 회사에 알려야 합니다.",
+          "retry_hint": null
+        },
+        {
+          "item_id": "fiction-item-5",
+          "check_item": 5,
+          "section": "가상 테스트 약관",
+          "article_title": "테스트 조항",
+          "quote": "이 약관에서 수술이란 치료를 직접 목적으로 의료기관에서 의사가 생체에 절단 또는 절제 등의 조작을 가하는 것을 말합니다.",
+          "retry_hint": null
+        },
+        {
+          "item_id": "fiction-item-6",
+          "check_item": 6,
+          "section": "가상 테스트 약관",
+          "article_title": "테스트 조항",
+          "quote": "계약을 중도 해지하면 해지환급금은 납입한 보험료보다 적거나 없을 수 있습니다.",
+          "retry_hint": null
+        }
+      ]
+    }
+  }
+}
