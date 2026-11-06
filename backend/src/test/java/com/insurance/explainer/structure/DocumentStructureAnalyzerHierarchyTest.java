@@ -189,4 +189,69 @@ class DocumentStructureAnalyzerHierarchyTest {
         assertThat(art2.text()).isEqualTo("용어를 정의합니다.");
         assertThat(art2.text()).doesNotContain("공휴일");
     }
+
+    @Test
+    void 번호로_시작하는_특약_제목도_특약으로_인식한다() {
+        // 다른 보험사 약관은 "제N장" 대신 "N.", "N-M" 번호로 절·특약 제목을 쓴다.
+        String page = """
+                1.  상해관련 특별약관
+                1-1  상해입원일당(1-180일)(갱신형)보장 특별약관
+                제1조 (보험금의 지급사유)
+                지급합니다.
+                1-2  상해수술입원일당(1-10일)(갱신형)보장 특별약관
+                제1조 (보험금의 지급사유)
+                수술입원일당을 지급합니다.
+                """;
+
+        var result = analyzer.analyze(List.of(new PageText(58, page)));
+
+        assertThat(result.riders()).extracting(RiderRange::name)
+                .containsExactly("1-1  상해입원일당(1-180일)(갱신형)보장 특별약관",
+                        "1-2  상해수술입원일당(1-10일)(갱신형)보장 특별약관");
+        // "1.  상해관련 특별약관" 자체도 번호+특별약관 모양이라 특약 하나(rider01)로
+        // 세어지지만, 조문이 안 붙어서 결과 리더 목록에는 남지 않는다(번호가 1부터
+        // 다시 시작하지 않고 건너뛴다).
+        assertThat(result.clauses()).extracting(Clause::clauseId)
+                .containsExactly("rider02-art1", "rider03-art1");
+    }
+
+    @Test
+    void 본문_중_짧은_지시어_참조는_새_특약으로_오인되지_않는다() {
+        // "이 특약", "그 특약" 처럼 본문에서 특정 특약을 가리키는 짧은 말은 제목이
+        // 아니라 조 본문의 일부로 남아야 한다("입원특약" 같은 실제 짧은 이름은 여전히
+        // 특약으로 인식돼야 한다).
+        String page = """
+                입원특약
+                제1조 (보험금의 지급사유)
+                이 특약
+                에서 정한 사유로 입원하면 지급합니다.
+                """;
+
+        var result = analyzer.analyze(List.of(new PageText(58, page)));
+
+        assertThat(result.riders()).extracting(RiderRange::name).containsExactly("입원특약");
+        assertThat(result.clauses()).hasSize(1);
+        assertThat(result.clauses().get(0).text()).isEqualTo("이 특약 에서 정한 사유로 입원하면 지급합니다.");
+    }
+
+    @Test
+    void 특약_제목_안의_U_0000_문자는_공백으로_정리된다() {
+        // 일부 PDF는 제목 줄의 공백 글리프가 U+0000으로 깨져 나온다. 상위 범주
+        // 제목("3.  상해 및 질병관련 특별약관")은 번호만 있고 자기 조문이 없어,
+        // 바로 다음에 나오는 실제 하위 특약 제목("3-1 ...")이 조문을 가져가야 한다.
+        String categoryTitleWithNulChars = "3." + ' ' + "  상해" + ' ' + "및" + ' ' + "질병관련 특별약관";
+        String page = categoryTitleWithNulChars + "\n"
+                + "3-1  응급실내원진료비(응급)(갱신형)보장 특별약관\n"
+                + "제1조 (보험금의 지급사유)\n"
+                + "지급합니다.\n";
+
+        var result = analyzer.analyze(List.of(new PageText(107, page)));
+
+        assertThat(result.riders()).extracting(RiderRange::name)
+                .containsExactly("3-1  응급실내원진료비(응급)(갱신형)보장 특별약관");
+        assertThat(result.clauses()).hasSize(1);
+        Clause clause = result.clauses().get(0);
+        assertThat(clause.clauseId()).isEqualTo("rider02-art1");
+        assertThat(clause.text()).doesNotContain(" ");
+    }
 }
