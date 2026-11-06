@@ -1,0 +1,127 @@
+.check-items-page {
+  text-align: center;
+}
+
+.check-items-intro {
+  min-height: 1056px;
+  padding: 101px 32px 0;
+}
+
+.check-items-intro h1 {
+  margin: 0;
+  font-size: 48px;
+  font-weight: 900;
+  line-height: 1.2;
+  word-break: keep-all;
+}
+
+.check-items-intro p {
+  margin: 30px 0 205px;
+  color: rgb(0 0 0 / 50%);
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1.2;
+  word-break: keep-all;
+}
+
+.check-items-intro img {
+  width: min(355px, 100%);
+  height: auto;
+  margin-inline: auto;
+  object-fit: contain;
+}
+
+.check-item {
+  min-height: 690px;
+  padding: 0 32px 80px;
+}
+
+.check-item h2 {
+  margin: 0;
+  font-size: 64px;
+  font-weight: 900;
+  line-height: 1.2;
+  word-break: keep-all;
+}
+
+.check-item__subtitle {
+  max-width: 1600px;
+  margin: 37px auto 0;
+  color: rgb(0 0 0 / 50%);
+  font-size: 48px;
+  font-weight: 900;
+  line-height: 1.2;
+  word-break: keep-all;
+}
+
+.check-item__description {
+  max-width: 936px;
+  margin: 37px auto 0;
+  color: var(--color-orange);
+  font-size: 24px;
+  font-weight: 900;
+  line-height: 1.2;
+  word-break: keep-all;
+  white-space: pre-line;
+}
+
+.check-items-page__action {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  min-height: 377px;
+  padding: 0 24px 80px;
+}
+
+.check-items-page__action .action-button {
+  min-width: 187px;
+  min-height: 44px;
+  padding: 10px 24px;
+  box-shadow: none;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+@media (max-width: 1000px) {
+  .check-items-intro {
+    min-height: 0;
+    padding: 72px 24px 128px;
+  }
+
+  .check-items-intro h1 {
+    font-size: clamp(28px, 4.8vw, 48px);
+  }
+
+  .check-items-intro p {
+    margin: 24px 0 64px;
+    font-size: 20px;
+    line-height: 1.5;
+  }
+
+  .check-item {
+    min-height: 0;
+    padding: 0 24px 128px;
+  }
+
+  .check-item h2 {
+    font-size: clamp(28px, 5vw, 48px);
+  }
+
+  .check-item__subtitle {
+    margin-top: 28px;
+    font-size: clamp(22px, 3vw, 32px);
+    line-height: 1.4;
+  }
+
+  .check-item__description {
+    margin-top: 28px;
+    font-size: 18px;
+    line-height: 1.6;
+  }
+
+  .check-items-page__action {
+    min-height: 0;
+    padding-bottom: 96px;
+  }
+}

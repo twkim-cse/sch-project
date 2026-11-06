@@ -1,0 +1,41 @@
+:root {
+  --color-blue: #0088ff;
+  --color-secondary-text: #727272;
+  --color-orange: #ff8d28;
+  font-family: 'Noto Sans KR Variable', 'Noto Sans KR', sans-serif;
+  color: #000;
+  background: #fff;
+  color-scheme: light;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  margin: 0;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+a {
+  color: inherit;
+}
+
+a:focus-visible,
+button:focus-visible {
+  outline: 3px solid #0056b3;
+  outline-offset: 5px;
+}
+
+img {
+  display: block;
+}

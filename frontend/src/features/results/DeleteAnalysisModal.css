@@ -1,0 +1,19 @@
+.delete-analysis-modal { width: min(1295px, calc(100% - 40px)); height: min(502px, calc(100svh - 40px)); }
+.delete-analysis-modal .analysis-modal__sheet { padding: 148px 40px 40px; text-align: center; }
+.delete-analysis-modal .analysis-modal__title { color: rgb(23 28 39 / 80%); font-weight: 900; line-height: 1.6; }
+.delete-analysis-modal .analysis-modal__close { top: 24px; right: 44px; font-size: 16px; }
+.delete-analysis-modal .analysis-modal__close:disabled { color: #8e8e93; cursor: wait; }
+.delete-analysis-modal__description { margin: 43px 0 0; color: rgb(0 0 0 / 40%); font-size: 20px; font-weight: 350; line-height: 1.2; word-break: keep-all; }
+.delete-analysis-modal__confirm { margin-top: 115px; padding: 10px 16px; border: 0; background: none; color: var(--color-orange); font-family: inherit; font-size: 20px; font-weight: 500; line-height: 1.2; cursor: pointer; }
+.delete-analysis-modal__confirm:disabled { color: #8e8e93; cursor: wait; }
+.delete-analysis-modal__preview, .delete-analysis-modal__status { color: #727272; font-size: 14px; line-height: 1.5; }
+.delete-analysis-modal__preview ~ .delete-analysis-modal__confirm,
+.delete-analysis-modal .workflow-error ~ .delete-analysis-modal__confirm { margin-top: 40px; }
+@media (max-width: 800px) {
+  .delete-analysis-modal .analysis-modal__sheet { padding: 92px 24px 32px; }
+  .delete-analysis-modal .analysis-modal__close { right: 24px; }
+  .delete-analysis-modal .analysis-modal__title { font-size: clamp(24px, 5vw, 40px); }
+  .delete-analysis-modal__description { margin-top: 28px; font-size: 18px; line-height: 1.6; }
+  .delete-analysis-modal__description span { display: block; }
+  .delete-analysis-modal__confirm { margin-top: 56px; }
+}
