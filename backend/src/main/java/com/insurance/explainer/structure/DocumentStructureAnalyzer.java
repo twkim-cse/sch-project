@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -22,10 +23,23 @@ public class DocumentStructureAnalyzer {
     private static final String MAIN_SECTION = "주계약";
     private static final String TOC_MARKER = "목차";
 
-    // "암진단 특별약관", "입원특약" 처럼 조 번호 없이 단독으로 나오는 짧은 제목 줄을
-    // 특약 시작으로 본다.
-    private static final Pattern RIDER_HEADING =
-            Pattern.compile("^([가-힣A-Za-z0-9·()\\s]{2,30}(특별약관|특약))$");
+    // "암진단 특별약관", "입원특약" 처럼 번호 없이 단독으로 나오는 특약 제목.
+    // 접미사 앞부분을 따로 잡아서, "이 특약"/"그 특약"처럼 본문 중 짧은 지시어
+    // 참조인 경우를 isRiderHeading에서 걸러낸다(길이만으로는 "입원특약"과
+    // 구분할 수 없다).
+    private static final Pattern NAMED_RIDER_HEADING =
+            Pattern.compile("^([가-힣A-Za-z0-9·()\\s]{2,40})(특별약관|특약)$");
+
+    // 제목이 아니라 본문에서 특정 특약을 가리키는 짧은 지시어. "이 특약" 등은
+    // 실제 특약 이름이 아니므로 제외한다.
+    private static final Set<String> RIDER_REFERENCE_WORDS =
+            Set.of("이", "그", "본", "해당", "동", "위", "아래", "같은", "대상");
+
+    // "1.  상해관련 특별약관", "1-1  상해입원일당(1-180일)(갱신형)보장 특별약관"
+    // 처럼 번호(와 선택적 세부번호)로 시작하는 특약/보장 항목 제목. 로마 숫자(Ⅱ 등)나
+    // 글꼴이 깨져 남는 문자가 제목 안에 섞여도 인식하도록 문자 종류를 넓게 허용한다.
+    private static final Pattern NUMBERED_RIDER_HEADING =
+            Pattern.compile("^\\d+(-\\d+)?\\.?\\s{1,3}\\S.{1,55}(특별약관|특약)$");
 
     // 제5조, 제5조(보험금 지급에 관한 세부규정). "제3조 제1항에 따라" 처럼 조 번호 뒤에
     // 곧바로 다른 항을 참조하는 본문 중 문구는 조 제목이 아니므로 제외한다.
@@ -69,6 +83,12 @@ public class DocumentStructureAnalyzer {
     // 목차 항목 끝에 붙는 "····72" 같은 가운뎃점/마침표 리더 + 쪽 번호. 목차의 조
     // 항목과, 본문에 실제로 나오는 같은 번호의 조를 구분하는 기준으로 쓴다.
     private static final Pattern DOT_LEADER_PAGE_REF = Pattern.compile("[·.]{2,}\\s*\\d{1,4}\\s*$");
+
+    // 목차 항목 안에서 리더가 쪽 번호 뒤가 아니라 줄 중간 어디에나 나올 수 있는
+    // 경우("53 ········· 특정 신체부위·질병 보장제한부 인수 특약" 처럼 쪽 번호가
+    // 앞에 오는 목차 형식)까지 포함해, 특약 제목 인식에서는 위치를 가리지 않고
+    // 가운뎃점/마침표 리더가 3개 이상 이어지면 목차 항목으로 본다.
+    private static final Pattern DOT_LEADER_ANYWHERE = Pattern.compile("[·.]{3,}");
 
     private static final String CIRCLED_DIGITS = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳";
 
@@ -213,8 +233,7 @@ public class DocumentStructureAnalyzer {
                 continue;
             }
 
-            Matcher riderMatcher = RIDER_HEADING.matcher(text);
-            if (riderMatcher.matches()) {
+            if (isRiderHeading(text)) {
                 clauses.addAll(flush(currentRiderId, currentSection, currentArticleNo,
                         currentArticleTitle, currentParagraphNo, currentClausePage, buffer,
                         circledSeqInArticle, itemSeq));
@@ -362,9 +381,28 @@ public class DocumentStructureAnalyzer {
      * 번호 붙은 보장/특약 항목, 가운뎃점 리더 + 쪽 번호로 끝나는 줄). 목차는 이런
      * 줄들이 쭉 이어지다가 실제 본문을 만나면 끝난다.
      */
+    /**
+     * 번호 없는 특약 제목("암진단 특별약관")과 번호(세부번호) 붙은 특약/보장 항목
+     * 제목("1.  상해관련 특별약관", "2-3  유사암진단(...)보장 특별약관")을 모두
+     * 특약 시작으로 본다.
+     */
+    private boolean isRiderHeading(String text) {
+        if (DOT_LEADER_ANYWHERE.matcher(text).find()) {
+            // 목차의 "N  상해관련 특별약관 ·········72", "53 ········· 특정
+            // 신체부위·질병 보장제한부 인수 특약" 같은 가운뎃점 리더가 든 줄은
+            // 조 제목과 마찬가지로 목차 항목일 뿐, 실제 특약 제목이 아니다.
+            return false;
+        }
+        Matcher namedMatcher = NAMED_RIDER_HEADING.matcher(text);
+        if (namedMatcher.matches() && !RIDER_REFERENCE_WORDS.contains(namedMatcher.group(1).strip())) {
+            return true;
+        }
+        return NUMBERED_RIDER_HEADING.matcher(text).matches();
+    }
+
     private boolean looksLikeTocChainLine(String text) {
         return ARTICLE.matcher(text).find()
-                || RIDER_HEADING.matcher(text).matches()
+                || isRiderHeading(text)
                 || COVERAGE_HEADING.matcher(text).matches()
                 || DOT_LEADER_PAGE_REF.matcher(text).find()
                 || (looksLikeHeadingLine(text) && (SECTION_HEADING.matcher(text).matches()
@@ -380,7 +418,7 @@ public class DocumentStructureAnalyzer {
      * 보장 항목 제목이나, 원래 조로 돌아오는 항 마커도 복귀 지점이다.
      */
     private boolean isSidebarResumePoint(String text, int currentArticleNum, List<Line> lines, int i) {
-        if (RIDER_HEADING.matcher(text).matches()) {
+        if (isRiderHeading(text)) {
             return true;
         }
         if (looksLikeHeadingLine(text) && (SECTION_HEADING.matcher(text).matches()
@@ -425,7 +463,7 @@ public class DocumentStructureAnalyzer {
             if (articleMatcher.find()) {
                 return "1".equals(articleMatcher.group(1));
             }
-            if (RIDER_HEADING.matcher(t).matches()
+            if (isRiderHeading(t)
                     || COVERAGE_HEADING.matcher(t).matches()
                     || (looksLikeHeadingLine(t) && (SECTION_HEADING.matcher(t).matches()
                             || GWAN_HEADING.matcher(t).matches() || CHAPTER_HEADING.matcher(t).matches()))) {
@@ -465,6 +503,16 @@ public class DocumentStructureAnalyzer {
         return s.replace("", replacement);
     }
 
+    // Some PDFs render the space glyph in styled title lines (e.g. rider
+    // headings) as U+0000 instead of a normal space. Replace it with a real
+    // space and collapse repeats.
+    private String normalizeNulAsSpace(String s) {
+        if (s.indexOf((char) 0) < 0) {
+            return s;
+        }
+        return s.replace((char) 0, (char) 32).replaceAll(" {2,}", " ").strip();
+    }
+
     /**
      * 모든 쪽의 글자를 줄 단위로 펼치면서, 쪽 번호만 있는 줄, 세로 사이드바 머리글
      * (쪽 가장자리에 한 글자씩 세로로 찍히는 "공/통/사/항/..." 같은 탭 라벨)과, 모든
@@ -477,7 +525,7 @@ public class DocumentStructureAnalyzer {
         for (PageText page : pages) {
             List<String> pageLines = new ArrayList<>();
             for (String raw : page.text().split("\n")) {
-                String stripped = raw.strip();
+                String stripped = normalizeNulAsSpace(raw.strip());
                 if (stripped.isEmpty() || PAGE_NUMBER_ONLY.matcher(stripped).matches()) {
                     continue;
                 }
@@ -531,7 +579,7 @@ public class DocumentStructureAnalyzer {
             }
             pagesWithContent++;
             String edge = fromStart ? pageLines.get(0) : pageLines.get(pageLines.size() - 1);
-            if (RIDER_HEADING.matcher(edge).matches() || ARTICLE.matcher(edge).find()) {
+            if (isRiderHeading(edge) || ARTICLE.matcher(edge).find()) {
                 continue; // 실제 제목일 수 있으니 머리글 후보로 보지 않는다.
             }
             counts.merge(edge, 1, Integer::sum);
