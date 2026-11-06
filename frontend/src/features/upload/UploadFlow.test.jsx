@@ -119,7 +119,7 @@ describe('Frame 17 file controls and Frame 50', () => {
   })
 
   it('shows confirmed deletion only when the rejection response supplies it', async () => {
-    const api = makeApi({ getDocument: vi.fn().mockResolvedValue({ documentId: readyDocument.documentId, status: 'REJECTED', reject: { code: 'POLICY_DETECTED' }, deleted: true }) })
+    const api = makeApi({ getDocument: vi.fn().mockResolvedValue({ documentId: readyDocument.documentId, status: 'REJECTED', reject: { code: 'POLICY_DETECTED', message: '보험증권으로 확인되었습니다.' }, deleted: true }) })
     const { user } = renderUpload(api)
     await choose(user)
     await user.click(screen.getByRole('button', { name: '업로드 시작하기' }))

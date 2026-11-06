@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import AnalysisModal from '../../components/AnalysisModal.jsx'
-import { ApiError } from '../../api/springApi.js'
-import { splitQuote, sourceLabel } from './resultModel.js'
+import { assertClause, splitQuote, sourceLabel } from './resultModel.js'
 import divider from '../../assets/clause-divider.svg'
 
 function ClauseModal({ api, documentId, card, onClose }) {
@@ -12,8 +11,7 @@ function ClauseModal({ api, documentId, card, onClose }) {
     let active = true
     async function load() {
       try {
-        const clause = await api.getClause(documentId, card.clauseId, { signal: controller.signal })
-        if (!clause || clause.clauseId !== card.clauseId || typeof clause.text !== 'string') throw new ApiError('INVALID_RESPONSE', '원문 응답 형식을 확인할 수 없습니다.')
+        const clause = assertClause(await api.getClause(documentId, card.clauseId, { signal: controller.signal }), card.clauseId)
         if (active) setState({ status: 'ready', clause })
       } catch (error) {
         if (active && error.name !== 'AbortError') setState({ status: 'error', message: error.message })

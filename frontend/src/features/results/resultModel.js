@@ -1,3 +1,17 @@
+import { ApiError } from '../../api/springApi.js'
+
+export function assertClause(data, expectedId) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)
+    || typeof data.clauseId !== 'string' || !data.clauseId || data.clauseId !== expectedId
+    || typeof data.text !== 'string'
+    // Keep the existing fallback for unavailable source labels and titles.
+    || ['section', 'article', 'paragraph', 'articleTitle'].some((field) => data[field] != null && typeof data[field] !== 'string')
+    || (data.page != null && (typeof data.page !== 'number' || !Number.isFinite(data.page)))) {
+    throw new ApiError('INVALID_RESPONSE', '원문 응답 형식을 확인할 수 없습니다.')
+  }
+  return data
+}
+
 export const checkItemNames = [
   '보험금을 주지 않는 경우', '기다려야 하는 기간', '보험료가 오를 수 있음',
   '알릴 의무', '약관이 정한 뜻', '중간에 해지하면',

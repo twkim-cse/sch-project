@@ -43,40 +43,85 @@ export function getUploadError(error) {
   }
 }
 
+// Validate response types without coercing values or changing the payload.
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+const isString = (value) => typeof value === 'string'
+const isId = (value) => isString(value) && value.length > 0
+const isNumber = (value) => typeof value === 'number' && Number.isFinite(value)
+const nullable = (check) => (value) => value == null || check(value)
+const hasFields = (value, fields) => fields.every((field) => Object.hasOwn(value, field))
+const isError = (value) => isObject(value) && isString(value.code) && isString(value.message)
+const isMetadata = (value) => isObject(value)
+  && hasFields(value, ['productName', 'versionLabel', 'pageCount'])
+  && nullable(isString)(value.productName) && nullable(isString)(value.versionLabel)
+  && nullable(isNumber)(value.pageCount)
+const isSource = (value) => isObject(value)
+  && ['section', 'article', 'paragraph'].every((field) => nullable(isString)(value[field]))
+  && isNumber(value.page)
+
 export function assertDocument(data, expectedId) {
-  if (!data?.documentId || (expectedId && data.documentId !== expectedId) || !['CHECKING', 'READY', 'REJECTED'].includes(data.status)) {
+  if (!isObject(data) || !isId(data.documentId) || (expectedId && data.documentId !== expectedId) || !['CHECKING', 'READY', 'REJECTED'].includes(data.status)) {
     throw new ApiError('INVALID_RESPONSE', '문서 확인 응답 형식을 확인할 수 없습니다.')
   }
-  if (data.status === 'READY' && data.riders != null && (!Array.isArray(data.riders) || data.riders.some((rider) => !rider?.riderId))) {
-    throw new ApiError('INVALID_RESPONSE', '서버의 특약 목록 형식을 확인할 수 없습니다.')
+  if (data.status === 'READY') {
+    // Preserve the existing unknown-metadata/retention UI for null values.
+    // CHECKING and REJECTED do not require READY-only fields.
+    if (!isMetadata(data) || !hasFields(data, ['riders', 'expiresAt'])) {
+      throw new ApiError('INVALID_RESPONSE', '문서 정보 응답 형식을 확인할 수 없습니다.')
+    }
+    if (data.riders != null && (!Array.isArray(data.riders) || data.riders.some((rider) => !isObject(rider)
+      || !isId(rider.riderId) || !isString(rider.name) || !isNumber(rider.pageStart)))) {
+      throw new ApiError('INVALID_RESPONSE', '서버의 특약 목록 형식을 확인할 수 없습니다.')
+    }
+    if (data.expiresAt != null && (!isString(data.expiresAt) || !Number.isFinite(Date.parse(data.expiresAt)))) {
+      throw new ApiError('INVALID_RESPONSE', '문서 보관 만료 시각의 형식을 확인할 수 없습니다.')
+    }
   }
-  if (data.status === 'READY' && data.expiresAt != null && !Number.isFinite(Date.parse(data.expiresAt))) {
-    throw new ApiError('INVALID_RESPONSE', '문서 보관 만료 시각의 형식을 확인할 수 없습니다.')
+  if ((data.status === 'REJECTED' || data.reject != null) && !isError(data.reject)) {
+    throw new ApiError('INVALID_RESPONSE', '문서 거절 응답 형식을 확인할 수 없습니다.')
   }
   return data
 }
 
 export function assertAnalysis(data, expectedId) {
-  if (!data?.analysisId || (expectedId && data.analysisId !== expectedId) || !['QUEUED', 'RUNNING', 'DONE', 'FAILED'].includes(data.status)) {
+  if (!isObject(data) || !isId(data.analysisId) || (expectedId && data.analysisId !== expectedId) || !['QUEUED', 'RUNNING', 'DONE', 'FAILED'].includes(data.status)) {
     throw new ApiError('INVALID_RESPONSE', '분석 상태 응답 형식을 확인할 수 없습니다.')
+  }
+  const running = data.status === 'RUNNING'
+  if ((running || data.step != null) && !steps.some(([step]) => step === data.step)
+    || ['stepIndex', 'stepCount'].some((field) => (running || Object.hasOwn(data, field)) && !isNumber(data[field]))) {
+    throw new ApiError('INVALID_RESPONSE', '분석 진행 단계 응답 형식을 확인할 수 없습니다.')
+  }
+  if ((data.status === 'FAILED' || data.error != null) && !isError(data.error)) {
+    throw new ApiError('INVALID_RESPONSE', '분석 오류 응답 형식을 확인할 수 없습니다.')
   }
   return data
 }
 
 export function assertResult(data, expectedId) {
-  if (!data || data.analysisId !== expectedId || !data.document || typeof data.document !== 'object' || Array.isArray(data.document) || !Array.isArray(data.groups) || !Array.isArray(data.checkSummary)) {
+  if (!isObject(data) || !isId(data.analysisId) || data.analysisId !== expectedId || !isMetadata(data.document)
+    || !Array.isArray(data.groups) || !Array.isArray(data.checkSummary)) {
     throw new ApiError('INVALID_RESPONSE', '분석 결과 형식을 확인할 수 없습니다. 결과를 다시 불러와 주세요.')
   }
-  if (typeof data.viewAll !== 'boolean' || !Array.isArray(data.selectedRiders) || data.selectedRiders.some((rider) => !rider || typeof rider !== 'object')
-    || data.groups.some((group) => !group || (group.name != null && typeof group.name !== 'string') || !Array.isArray(group.cards) || group.cards.some((card) => !card || typeof card !== 'object'
-      || !Number.isInteger(card.checkItem) || card.checkItem < 1 || card.checkItem > 6
-      || !['HIGH', 'NORMAL'].includes(card.importance) || !['FULL', 'QUOTE_ONLY'].includes(card.display) || typeof card.quote !== 'string'
-      || (card.title != null && typeof card.title !== 'string') || (card.explanation != null && typeof card.explanation !== 'string')))) {
+  if (typeof data.viewAll !== 'boolean' || !Array.isArray(data.selectedRiders)
+    || data.selectedRiders.some((rider) => !isObject(rider) || !isId(rider.riderId) || !isString(rider.name))
+    || data.groups.some((group) => !isObject(group) || !['MAIN', 'RIDER'].includes(group.scope)
+      || (group.scope === 'MAIN' ? group.riderId !== null : !isId(group.riderId))
+      || !isString(group.name) || !Array.isArray(group.cards) || group.cards.some((card) => !isObject(card)
+        || !isId(card.cardId) || !isId(card.clauseId)
+        || !Number.isInteger(card.checkItem) || card.checkItem < 1 || card.checkItem > 6
+        || !['HIGH', 'NORMAL'].includes(card.importance) || !['FULL', 'QUOTE_ONLY'].includes(card.display)
+        || !isString(card.quote) || typeof card.fromTable !== 'boolean' || !isSource(card.source)
+        || !hasFields(card, ['title', 'explanation'])
+        || (card.display === 'FULL'
+          ? !isString(card.title) || !isString(card.explanation)
+          : !nullable(isString)(card.title) || !nullable(isString)(card.explanation))))) {
     throw new ApiError('INVALID_RESPONSE', '분석 결과 카드 형식을 확인할 수 없습니다.')
   }
   const items = data.checkSummary.map((item) => item?.checkItem)
   if (new Set(items).size !== 6 || items.length !== 6 || items.some((item) => !Number.isInteger(item) || item < 1 || item > 6)
-    || data.checkSummary.some((item) => !['FOUND', 'NOT_FOUND'].includes(item.status) || (item.name != null && typeof item.name !== 'string'))) {
+    || data.checkSummary.some((item) => !isObject(item) || !['FOUND', 'NOT_FOUND'].includes(item.status)
+      || !isString(item.name) || !isNumber(item.cardCount))) {
     throw new ApiError('INVALID_RESPONSE', '6개 점검 항목의 결과 요약을 확인할 수 없습니다.')
   }
   return data

@@ -6,7 +6,7 @@ import { readyDocument, completedResult } from '../test/analysisFixtures.js'
 
 function createLookup({ document = readyDocument, status = 'DONE', result = completedResult } = {}) {
   const api = {
-    getAnalysis: vi.fn().mockResolvedValue({ analysisId: completedResult.analysisId, status }),
+    getAnalysis: vi.fn().mockResolvedValue({ analysisId: completedResult.analysisId, status, ...(status === 'RUNNING' ? { step: 'EXTRACTING', stepIndex: 1, stepCount: 4 } : {}), ...(status === 'FAILED' ? { error: { code: 'ANALYSIS_FAILED', message: '분석 실패' } } : {}) }),
     getDocument: vi.fn().mockResolvedValue(document),
     getResult: vi.fn().mockResolvedValue(result),
   }
