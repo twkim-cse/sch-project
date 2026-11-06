@@ -84,6 +84,12 @@ public class DocumentStructureAnalyzer {
     // 항목과, 본문에 실제로 나오는 같은 번호의 조를 구분하는 기준으로 쓴다.
     private static final Pattern DOT_LEADER_PAGE_REF = Pattern.compile("[·.]{2,}\\s*\\d{1,4}\\s*$");
 
+    // 목차 항목 안에서 리더가 쪽 번호 뒤가 아니라 줄 중간 어디에나 나올 수 있는
+    // 경우("53 ········· 특정 신체부위·질병 보장제한부 인수 특약" 처럼 쪽 번호가
+    // 앞에 오는 목차 형식)까지 포함해, 특약 제목 인식에서는 위치를 가리지 않고
+    // 가운뎃점/마침표 리더가 3개 이상 이어지면 목차 항목으로 본다.
+    private static final Pattern DOT_LEADER_ANYWHERE = Pattern.compile("[·.]{3,}");
+
     private static final String CIRCLED_DIGITS = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳";
 
     public StructureAnalysisResult analyze(List<PageText> pages) {
@@ -381,6 +387,12 @@ public class DocumentStructureAnalyzer {
      * 특약 시작으로 본다.
      */
     private boolean isRiderHeading(String text) {
+        if (DOT_LEADER_ANYWHERE.matcher(text).find()) {
+            // 목차의 "N  상해관련 특별약관 ·········72", "53 ········· 특정
+            // 신체부위·질병 보장제한부 인수 특약" 같은 가운뎃점 리더가 든 줄은
+            // 조 제목과 마찬가지로 목차 항목일 뿐, 실제 특약 제목이 아니다.
+            return false;
+        }
         Matcher namedMatcher = NAMED_RIDER_HEADING.matcher(text);
         if (namedMatcher.matches() && !RIDER_REFERENCE_WORDS.contains(namedMatcher.group(1).strip())) {
             return true;
