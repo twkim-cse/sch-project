@@ -13,7 +13,18 @@ uvicorn app.main:app --host 127.0.0.1 --port 8001
 ```
 
 `GEMINI_API_KEY`, `GEMINI_MODEL`을 환경변수 또는 로컬 `.env`에 설정하세요.
-검증에 사용한 모델 설정은 `gemini-3.5-flash-lite`입니다.
+현재 팀 통합 테스트 모델은 `gemini-3.6-flash`입니다. 코드에 모델명을 고정하지 않으며,
+실행 환경의 `GEMINI_MODEL`을 그대로 사용합니다. PowerShell에서는 다음과 같이 설정합니다.
+
+```powershell
+$env:GEMINI_MODEL="gemini-3.6-flash"
+```
+
+`GEMINI_API_KEY`는 각자 환경변수 또는 Git 제외된 `.env`에서 제공하세요.
+Compose 실행 시에는 저장소 루트에서 해당 환경변수를 제공한 뒤
+`docker compose up -d --build ai`로 재배포합니다. 환경변수 변경 후에는 프로세스/컨테이너를
+다시 만들어야 합니다. `GET /health`의 `model`로 실제 적용값을 확인하세요.
+모델 변경은 계정별 접근 권한·할당량을 보장하지 않습니다.
 키와 `.env`는 저장소에 커밋하지 않습니다.
 `/health`와 기존 모노레포 호환용 `/ai/health`를 제공합니다.
 Docker는 기존 `app.main:app` 진입점을 유지하며 실제 구현을 로드합니다.
@@ -21,10 +32,13 @@ Docker는 기존 `app.main:app` 진입점을 유지하며 실제 구현을 로�
 ## 오프라인 검증
 
 ```powershell
-python -m unittest -q test_explain test_real_policy_mock test_contract_audit test_extract_validation test_extract_batching test_extract_categories test_extract_refund test_extract_recheck test_extract_duty test_extract_recheck_instruction test_extract_accuracy test_refund_postvalidation test_extract_pipeline
+python -m unittest -q test_explain test_real_policy_mock test_contract_audit test_extract_validation test_extract_batching test_extract_categories test_extract_refund test_extract_recheck test_extract_duty test_extract_recheck_instruction test_extract_accuracy test_refund_postvalidation test_extract_pipeline test_explain_stability
 ```
 
 테스트는 dotenv와 Gemini 호출을 모의 처리합니다. 실제 API 테스트는 자동으로 실행되지 않습니다.
+
+explain의 단계별 제한 시간, 240초 요청 예산, 503/504의 제한적 재시도와 알려진 한계는
+[README_explain_stability.md](README_explain_stability.md)를 참고하세요. B안은 기본 OFF입니다.
 
 ```powershell
 # 입력 검사만 수행
@@ -48,8 +62,8 @@ Dockerfile은 이 모듈을 명시적으로 복사하며 `.dockerignore`는 런�
 키, .env, 실제 약관, 테스트 결과는 이미지에 복사하지 않습니다. 키는 런타임에만 전달하세요.
 
 저장소 루트의 Compose 빌드 컨텍스트는 `./ai`입니다. Compose는 호스트에서 제공하는
-`GEMINI_API_KEY`, `GEMINI_MODEL`을 AI 컨테이너로 전달합니다. 기존 모델 값을 그대로
-사용하고 값을 저장소에 작성하지 마세요. 예전 `AI_MODEL_API_KEY` 항목은 보존했지만
+`GEMINI_API_KEY`, `GEMINI_MODEL`을 AI 컨테이너로 전달합니다. 모델은 환경변수로 지정하고,
+실제 API 키를 저장소에 작성하지 마세요. 예전 `AI_MODEL_API_KEY` 항목은 보존했지만
 현재 AI 코드가 읽는 키 이름은 `GEMINI_API_KEY`입니다.
 
 ```powershell
