@@ -21,6 +21,57 @@ function expectInvalid(validate) {
 }
 
 describe('document response types', () => {
+  it.each([
+    ['productName', 'versionLabel'], ['productName'], ['versionLabel'],
+  ])('normalizes only omitted READY metadata (%j) without mutating the response', (...fields) => {
+    const data = structuredClone(readyDocument)
+    for (const field of fields) delete data[field]
+    const before = structuredClone(data)
+    Object.freeze(data)
+    const document = assertDocument(data, data.documentId)
+    expect(document).not.toBe(data)
+    expect(document).toEqual({ productName: null, versionLabel: null, ...before })
+    for (const field of fields) {
+      expect(Object.hasOwn(document, field)).toBe(true)
+      expect(document[field]).toBeNull()
+      expect(Object.hasOwn(data, field)).toBe(false)
+    }
+    expect(data).toEqual(before)
+  })
+  it.each([
+    { productName: null, versionLabel: null },
+    { productName: '상품명', versionLabel: '개정판' },
+    { productName: null, versionLabel: '개정판' },
+    { productName: '상품명', versionLabel: null },
+  ])('preserves explicit null/string READY metadata %j', (metadata) => {
+    const data = Object.freeze({ ...readyDocument, ...metadata })
+    expect(assertDocument(data, data.documentId)).toBe(data)
+    expect(data.productName).toBe(metadata.productName)
+    expect(data.versionLabel).toBe(metadata.versionLabel)
+  })
+  describe.each(['productName', 'versionLabel'])('%s type validation', (field) => {
+    it.each([42, [], {}, true, false])('rejects an invalid value %j even when the other optional field is absent', (value) => {
+      const data = { ...readyDocument, [field]: value }
+      expectInvalid(() => assertDocument(data, data.documentId))
+      delete data[field === 'productName' ? 'versionLabel' : 'productName']
+      const before = structuredClone(data)
+      expectInvalid(() => assertDocument(data, data.documentId))
+      expect(data).toEqual(before)
+    })
+  })
+  it.each(['documentId', 'status', 'pageCount', 'riders', 'expiresAt'])('still rejects missing %s when optional metadata is absent', (field) => {
+    const data = { ...readyDocument }
+    delete data.productName
+    delete data.versionLabel
+    delete data[field]
+    expectInvalid(() => assertDocument(data, readyDocument.documentId))
+  })
+  it('preserves document ID matching after optional metadata normalization', () => {
+    const data = { ...readyDocument }
+    delete data.productName
+    delete data.versionLabel
+    expectInvalid(() => assertDocument(data, 'wrong-document'))
+  })
   it('preserves valid metadata, null values and empty rider lists without coercion', () => {
     for (const document of [readyDocument,
       { ...readyDocument, productName: null, versionLabel: null, riders: [] },
@@ -41,10 +92,17 @@ describe('document response types', () => {
     ['riders.0.riderId', 1], ['riders.0.name', {}], ['riders.0.name', undefined],
     ['riders.0.pageStart', { value: 85 }], ['riders.0.pageStart', '85'],
     ['riders.0.pageStart', undefined], ['riders.0.pageStart', Number.NaN],
-  ])('rejects invalid %s (%#)', (path, value) => {
+  ])('validates document field %s (%#) without mutating the response', (path, value) => {
     const data = changed(readyDocument, path, value)
     const before = structuredClone(data)
-    expectInvalid(() => assertDocument(data, 'test-document'))
+    if (path === 'productName' && value === undefined) {
+      const document = assertDocument(data, 'test-document')
+      expect(document).not.toBe(data)
+      expect(document).toEqual({ ...before, productName: null })
+      expect(Object.hasOwn(data, 'productName')).toBe(false)
+    } else {
+      expectInvalid(() => assertDocument(data, 'test-document'))
+    }
     expect(data).toEqual(before)
   })
   it.each([undefined, [], { code: 'NO_TEXT' }, { code: {}, message: '오류' }, { code: 'NO_TEXT', message: {} }])('rejects malformed rejection %#', (reject) => {
@@ -82,6 +140,12 @@ describe('analysis response types', () => {
 })
 
 describe('result response types', () => {
+  it.each(['productName', 'versionLabel', 'pageCount'])('still requires result document metadata %s', (field) => {
+    const data = changed(completedResult, `document.${field}`, undefined)
+    const before = structuredClone(data)
+    expectInvalid(() => assertResult(data, data.analysisId))
+    expect(data).toEqual(before)
+  })
   it('accepts nullable document metadata, MAIN riderId and QUOTE_ONLY text', () => {
     const result = structuredClone(completedResult)
     result.document.productName = null

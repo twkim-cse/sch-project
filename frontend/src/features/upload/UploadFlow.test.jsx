@@ -54,6 +54,67 @@ async function goToRiders(user) {
 afterEach(() => vi.useRealTimers())
 
 describe('Frame 17 file controls and Frame 50', () => {
+  it('selects, replaces, clears, and uploads a Haansoft PDF only after the start button is clicked', async () => {
+    const { user, api } = renderUpload()
+    const file = new File(['%PDF-1.7 test-only file'], 'test.pdf', { type: 'application/haansoftpdf' })
+    const replacement = new File(['%PDF-1.7 replacement'], 'replacement.PDF', { type: 'application/haansoftpdf' })
+    await choose(user, file)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByLabelText('선택한 파일 정보').textContent).toContain('application/haansoftpdf')
+    expect(screen.getByRole('button', { name: '업로드 시작하기' }).disabled).toBe(false)
+    await choose(user, replacement)
+    expect(screen.getByText('replacement.PDF')).toBeTruthy()
+    expect(screen.queryByText('test.pdf')).toBeNull()
+    await user.click(screen.getByRole('button', { name: '선택 파일 삭제' }))
+    expect(screen.queryByLabelText('선택한 파일 정보')).toBeNull()
+    expect(screen.getByRole('button', { name: '업로드 시작하기' }).disabled).toBe(true)
+    await choose(user, file)
+    for (const method of Object.values(api)) expect(method).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: '업로드 시작하기' }))
+    expect(await screen.findByRole('dialog', { name: '보험 약관 확인 완료' })).toBeTruthy()
+    expect(api.uploadDocument).toHaveBeenCalledTimes(1)
+    expect(api.uploadDocument.mock.calls[0][0]).toBe(file)
+    expect(api.getDocument).toHaveBeenCalledTimes(1)
+    expect(api.startAnalysis).not.toHaveBeenCalled()
+  })
+
+  it('rejects renamed plain text locally and allows retrying with a Haansoft PDF', async () => {
+    const { user, api } = renderUpload()
+    await choose(user, new File(['plain text'], 'renamed.pdf', { type: 'text/plain' }))
+    expect(screen.getByText('오류 코드: NOT_PDF')).toBeTruthy()
+    expect(screen.getByRole('alert').textContent).toContain('PDF 파일만')
+    expect(screen.getByRole('button', { name: '업로드 시작하기' }).disabled).toBe(true)
+    await user.click(screen.getByRole('button', { name: '다시 시도하기' }))
+    await choose(user, new File(['%PDF-1.7 test-only file'], 'test.pdf', { type: 'application/haansoftpdf' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByText('test.pdf')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '업로드 시작하기' }).disabled).toBe(false)
+    for (const method of Object.values(api)) expect(method).not.toHaveBeenCalled()
+  })
+
+  it('honors a server NOT_PDF rejection for content disguised with Haansoft PDF metadata', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false, status: 400,
+      text: async () => JSON.stringify({ code: 'NOT_PDF', message: 'PDF 내용 검증 실패' }),
+    })
+    const { user } = renderUpload(createSpringApi({ baseUrl: '', fetchImpl }))
+    const file = new File(['plain text, not a PDF'], 'renamed.pdf', { type: 'application/haansoftpdf' })
+    await choose(user, file)
+    expect(fetchImpl).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: '업로드 시작하기' }))
+    expect(await screen.findByText('오류 코드: NOT_PDF')).toBeTruthy()
+    expect(screen.getByText('PDF 내용 검증 실패')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '확인하고 다음으로' })).toBeNull()
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    const [url, options] = fetchImpl.mock.calls[0]
+    expect(url).toBe('/api/documents')
+    expect(options.method).toBe('POST')
+    expect(options.body.get('file')).toBe(file)
+    await user.click(screen.getByRole('button', { name: '다시 시도하기' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByRole('button', { name: '업로드 시작하기' }).disabled).toBe(true)
+  })
+
   it('wires the file picker, renders metadata, and supports clearing/reselecting one PDF', async () => {
     const { user, api } = renderUpload()
     const input = screen.getByLabelText('보험약관 PDF 파일 선택')

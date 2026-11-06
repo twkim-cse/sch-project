@@ -10,6 +10,22 @@ describe('PDF selection and error instructions', () => {
     expect(validatePdfSelection([file()])).toBeNull()
     expect(validatePdfSelection([file({ size: MAX_PDF_SIZE_BYTES })])).toBeNull()
   })
+  it.each(['', 'application/pdf', 'application/x-pdf', 'application/octet-stream', 'application/haansoftpdf'])('accepts a PDF with browser-reported MIME %j', (type) => {
+    expect(validatePdfSelection([file({ type, size: 150049 })])).toBeNull()
+  })
+  it.each([
+    { name: 'test.txt', type: 'application/haansoftpdf' },
+    { name: 'test.pdf', type: 'text/plain' },
+    { name: 'test.pdf', type: 'application/unrecognized' },
+  ])('does not accept invalid metadata just because one PDF indicator matches: %j', (metadata) => {
+    expect(validatePdfSelection([file(metadata)])).toEqual({ code: 'NOT_PDF' })
+  })
+  it.each([
+    [0, 'EMPTY_FILE'],
+    [MAX_PDF_SIZE_BYTES + 1, 'FILE_TOO_LARGE'],
+  ])('retains size validation for Haansoft PDF size %i', (size, code) => {
+    expect(validatePdfSelection([file({ type: 'application/haansoftpdf', size })]).code).toBe(code)
+  })
   it.each([
     [[], 'FILE_COUNT'], [[file(), file()], 'FILE_COUNT'],
     [[file({ name: 'test.exe' })], 'NOT_PDF'], [[file({ type: 'image/png' })], 'NOT_PDF'],
