@@ -347,7 +347,7 @@ class ExplainTests(unittest.TestCase):
     def test_errors_at_generation_and_review(self):
         for exc in [errors.ClientError(403, {"error": {"message": "SECRET"}}), errors.ServerError(504, {"error": {"message": "SECRET"}}), httpx.ReadTimeout("SECRET"), ValueError("SECRET")]:
             for during_review in (False, True):
-                sequence = [exc]
+                sequence = [exc] * (3 if getattr(exc, 'code', None) == 504 else 1)
                 if during_review:
                     sequence.insert(0, SimpleNamespace(text=json.dumps(self.draft())))
                 self.mock.models.generate_content.side_effect = sequence
@@ -435,11 +435,11 @@ class ExplainTests(unittest.TestCase):
             self.assertEqual(self.post().status_code, 200)
         self.assertEqual([call.args[0] for call in self.sleep.call_args_list], [2, 58])
 
-    def test_mixed_transient_errors_still_only_two_attempts(self):
-        self.mock.models.generate_content.side_effect = [self.exhausted(), self.unavailable()]
+    def test_mixed_transient_errors_respect_request_retry_budget(self):
+        self.mock.models.generate_content.side_effect = [self.exhausted(), self.unavailable(), self.unavailable()]
         with patch.object(self.ns["logger"], "warning"), patch.object(self.ns["logger"], "error"):
             self.assertEqual(self.post().status_code, 502)
-        self.assertEqual(self.mock.models.generate_content.call_count, 2)
+        self.assertEqual(self.mock.models.generate_content.call_count, 3)
 
     def test_generation_503_retry_success(self):
         self.mock.models.generate_content.side_effect = [
@@ -468,11 +468,11 @@ class ExplainTests(unittest.TestCase):
         self.assertEqual(calls[1].kwargs, calls[2].kwargs)
         self.assertIs(calls[1].kwargs["config"].system_instruction, self.ns["MEANING_REVIEW_INSTRUCTION"])
 
-    def test_503_twice_returns_502(self):
+    def test_503_three_times_returns_502(self):
         for during_review in (False, True):
             self.mock.models.generate_content.reset_mock()
             self.sleep.reset_mock()
-            sequence = [self.unavailable(), self.unavailable()]
+            sequence = [self.unavailable(), self.unavailable(), self.unavailable()]
             if during_review:
                 sequence.insert(0, SimpleNamespace(text=json.dumps(self.draft())))
             self.mock.models.generate_content.side_effect = sequence
@@ -481,8 +481,8 @@ class ExplainTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 502)
                 self.assertIn("final_failure", str(log.call_args_list))
                 self.assertNotIn("SECRET", str(log.call_args_list))
-            self.assertEqual(self.mock.models.generate_content.call_count, 3 if during_review else 2)
-            self.sleep.assert_called_once_with(2)
+            self.assertEqual(self.mock.models.generate_content.call_count, 4 if during_review else 3)
+            self.assertEqual([c.args[0] for c in self.sleep.call_args_list], [2, 4])
 
     def test_other_http_codes_not_retried(self):
         for code in (400, 401, 403):
