@@ -38,7 +38,49 @@ async function startAnalysis(user) {
   await user.click(screen.getByRole('button', { name: '분석 시작하기' }))
 }
 
+describe('optional READY document metadata through the HTTP adapter', () => {
+  it.each([
+    ['productName', 'versionLabel'], ['productName'], ['versionLabel'],
+  ])('renders missing metadata (%j) as unconfirmed and advances to rider selection', async (...fields) => {
+    const document = structuredClone(readyDocument)
+    for (const field of fields) delete document[field]
+    const { user, fetchImpl } = setup({ document })
+    await upload(user)
+    const modal = await screen.findByRole('dialog', { name: '보험 약관 확인 완료' })
+    expect(within(modal).getAllByText('확인되지 않음')).toHaveLength(fields.length)
+    for (const field of ['productName', 'versionLabel']) {
+      if (!fields.includes(field)) expect(within(modal).getByText(readyDocument[field])).toBeTruthy()
+    }
+    expect(within(modal).getByText('212쪽')).toBeTruthy()
+    expect(within(modal).getByText(/2099/)).toBeTruthy()
+    expect(screen.queryByText('오류 코드: INVALID_RESPONSE')).toBeNull()
+    await user.click(within(modal).getByRole('button', { name: '확인하고 다음으로' }))
+    expect(screen.getByRole('dialog', { name: '가입한 특약 선택' })).toBeTruthy()
+    expect(screen.getByRole('checkbox', { name: /테스트 진단 특별약관/ })).toBeTruthy()
+    expect(screen.getByText('85쪽')).toBeTruthy()
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual(['/api/documents', `/api/documents/${readyDocument.documentId}`])
+    for (const field of fields) expect(Object.hasOwn(document, field)).toBe(false)
+  })
+})
+
 describe('invalid HTTP payloads follow existing UI error and retry flows', () => {
+  it.each(['productName', 'versionLabel'])('retains INVALID_RESPONSE and fresh-upload retry for invalid %s', async (field) => {
+    const invalid = { ...readyDocument, [field]: 212 }
+    delete invalid[field === 'productName' ? 'versionLabel' : 'productName']
+    const { user, replies } = setup({ document: invalid })
+    await upload(user)
+    expect(await screen.findByText('오류 코드: INVALID_RESPONSE')).toBeTruthy()
+    expect(screen.getByText('문서 정보 응답 형식을 확인할 수 없습니다.')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '확인하고 다음으로' })).toBeNull()
+    replies.document = { ...readyDocument }
+    delete replies.document.productName
+    delete replies.document.versionLabel
+    await user.click(screen.getByRole('button', { name: '다시 시도하기' }))
+    await upload(user)
+    await user.click(await screen.findByRole('button', { name: '확인하고 다음으로' }))
+    expect(screen.getByRole('dialog', { name: '가입한 특약 선택' })).toBeTruthy()
+  })
+
   it.each(['object pageStart', 'missing document metadata', 'wrong riders container'])('rejects %s before rendering and supports a fresh upload', async (kind) => {
     const invalid = structuredClone(readyDocument)
     if (kind === 'object pageStart') invalid.riders[0].pageStart = { value: 85 }

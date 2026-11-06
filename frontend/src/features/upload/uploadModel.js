@@ -4,7 +4,8 @@ import { ApiError } from '../../api/springApi.js'
 export function validatePdfSelection(files) {
   if (files.length !== 1) return { code: 'FILE_COUNT', message: 'PDF 파일은 한 번에 한 개만 선택해 주세요.' }
   const [file] = files
-  if (!/\.pdf$/i.test(file.name) || !['', 'application/pdf', 'application/x-pdf', 'application/octet-stream'].includes(file.type)) {
+  // Metadata is a selection hint; the server must still validate the PDF content.
+  if (!/\.pdf$/i.test(file.name) || !['', 'application/pdf', 'application/x-pdf', 'application/octet-stream', 'application/haansoftpdf'].includes(file.type)) {
     return { code: 'NOT_PDF' }
   }
   if (file.size > MAX_PDF_SIZE_BYTES) return { code: 'FILE_TOO_LARGE' }
@@ -64,6 +65,10 @@ export function assertDocument(data, expectedId) {
     throw new ApiError('INVALID_RESPONSE', '문서 확인 응답 형식을 확인할 수 없습니다.')
   }
   if (data.status === 'READY') {
+    // Spring may omit null metadata. Copy only when defaults are needed.
+    if (!hasFields(data, ['productName', 'versionLabel'])) {
+      data = { productName: null, versionLabel: null, ...data }
+    }
     // Preserve the existing unknown-metadata/retention UI for null values.
     // CHECKING and REJECTED do not require READY-only fields.
     if (!isMetadata(data) || !hasFields(data, ['riders', 'expiresAt'])) {
