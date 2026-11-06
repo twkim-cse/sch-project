@@ -5,6 +5,7 @@ import logging
 import time
 from collections import deque
 from threading import Lock
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import httpx
@@ -118,16 +119,21 @@ class ModelConfigurationError(Exception):
     pass
 
 
-def verify_model():
+def verify_model(http_options=None, deadline=None):
     # Check the account's actual model list before sending document contents.
     if not MODEL_NAME:
         raise ModelConfigurationError("GEMINI_MODEL is missing")
     model_id = MODEL_NAME.removeprefix("models/")
-    for model in client.models.list():
+    options = {'config': types.ListModelsConfig(http_options=http_options)} if http_options is not None else {}
+    for model in client.models.list(**options):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("Model lookup exceeded explain budget")
         if (model.name or "").removeprefix("models/") == model_id:
             if "generateContent" in (model.supported_actions or []):
                 return
             raise ModelConfigurationError("Model does not support generateContent")
+    if deadline is not None and time.monotonic() >= deadline:
+        raise TimeoutError("Model lookup exceeded explain budget")
     raise ModelConfigurationError("Model is not available to this account")
 
 # 요청 데이터 구조 정의 (Pydantic 모델)
@@ -403,6 +409,45 @@ class ExplainCallLimiter:
 
 explain_call_limiter = ExplainCallLimiter()
 
+# Per HTTP request; no shared-client or extract/classify settings are changed.
+EXPLAIN_TOTAL_SECONDS = 240
+EXPLAIN_GENERATION_SECONDS = 60
+EXPLAIN_REVIEW_SECONDS = 45
+EXPLAIN_LOOKUP_SECONDS = 15
+EXPLAIN_MAX_ATTEMPTS = 32
+EXPLAIN_MAX_RETRIES = 2
+_explain_budget = ContextVar("explain_budget", default=None)
+
+
+class ExplainCallBudgetError(RuntimeError):
+    pass
+
+
+class ExplainBudget:
+    def __init__(self):
+        self.deadline = time.monotonic() + EXPLAIN_TOTAL_SECONDS
+        self.attempts = 0
+        self.retries = 0
+        self.item_index = 0
+
+    def remaining(self):
+        seconds = self.deadline - time.monotonic()
+        if seconds <= 0:
+            logger.warning("Gemini explain budget_exhausted=time attempts=%d retries=%d", self.attempts, self.retries)
+            raise TimeoutError("Explain request time budget exceeded")
+        return seconds
+
+    def http_options(self, seconds):
+        return types.HttpOptions(timeout=max(1, int(min(seconds, self.remaining()) * 1000)),
+                                 retry_options=types.HttpRetryOptions(attempts=1))
+
+    def reserve_attempt(self):
+        self.remaining()
+        if self.attempts >= EXPLAIN_MAX_ATTEMPTS:
+            logger.warning("Gemini explain budget_exhausted=calls attempts=%d retries=%d", self.attempts, self.retries)
+            raise ExplainCallBudgetError("Explain request call budget exceeded")
+        self.attempts += 1
+
 
 def explain_429_delay(exc):
     """Use structured retry metadata only; never print headers or error bodies."""
@@ -477,6 +522,7 @@ def log_explain_validation(exc, stage, response_shape="unknown"):
 
 
 def explain_json_call(instruction, payload, output_model, item_id):
+    budget = _explain_budget.get() or ExplainBudget()
     stage = "meaning_review" if output_model is MeaningReview else "generation"
     validation_stage = "meaning_review" if output_model is MeaningReview else "explanation_generation"
     contents = json.dumps(payload, ensure_ascii=False)
@@ -484,34 +530,66 @@ def explain_json_call(instruction, payload, output_model, item_id):
         system_instruction=instruction,
         response_mime_type="application/json",
     )
-    for retry_count in range(2):
-        explain_call_limiter.acquire()
+    for retry_count in range(3):
+        budget.remaining()
+        explain_call_limiter.acquire(deadline=budget.deadline)
+        budget.reserve_attempt()
+        attempt_config = config.model_copy(update={'http_options': budget.http_options(
+            EXPLAIN_REVIEW_SECONDS if output_model is MeaningReview else EXPLAIN_GENERATION_SECONDS)})
+        call_started = time.monotonic()
+        call_elapsed_ms = None
+        outcome, http_code = "failed", None
         try:
             response = client.models.generate_content(
-                model=MODEL_NAME, contents=contents, config=config,
+                model=MODEL_NAME, contents=contents, config=attempt_config,
             )
+            call_elapsed_ms = (time.monotonic() - call_started) * 1000
+            http_code = 200
+            budget.remaining()
+            outcome, http_code = "succeeded", 200
             break
         except errors.APIError as exc:
+            call_elapsed_ms = (time.monotonic() - call_started) * 1000
             code, status, _ = extract_error_diagnostics(exc)
+            http_code = code
+            if code == 504:
+                logger.warning("Gemini explain timeout_origin=server stage=%s retry_count=%d http_code=504", stage, retry_count)
             if code == 429:
                 logger.warning("Gemini explain quota_warning=daily_quota_not_resolved_by_pacing")
-            if code in (429, 503) and retry_count == 0:
+            retry_limit = 1 if code == 429 else 2
+            if code in (429, 503, 504) and retry_count < retry_limit and budget.retries < EXPLAIN_MAX_RETRIES:
                 retry_code = code
-                delay = explain_429_delay(exc) if code == 429 else 2
+                delay = explain_429_delay(exc) if code == 429 else 2 * (2 ** budget.retries)
+                if delay >= budget.remaining():
+                    logger.warning("Gemini explain retry_skipped stage=%s reason=insufficient_time http_code=%s", stage, code)
+                    raise TimeoutError("Explain retry exceeds request budget") from None
+                budget.retries += 1
+                outcome = "retry_scheduled"
                 logger.warning(
-                    "Gemini explain call stage=%s retry_count=1 http_code=%s api_status=%s wait_seconds=%.3f outcome=retry_scheduled",
-                    stage, code, status, delay,
+                    "Gemini explain call stage=%s retry_count=%d http_code=%s api_status=%s wait_seconds=%.3f outcome=retry_scheduled",
+                    stage, retry_count + 1, code, status, delay,
                 )
                 # Recheck quota after waking; failed attempts also occupy the window.
                 while delay > 0:
+                    budget.remaining()
                     pause = min(delay, 60)
                     time.sleep(pause)
                     delay -= pause
                 continue
+            if code in (429, 503, 504) and budget.retries >= EXPLAIN_MAX_RETRIES:
+                logger.warning("Gemini explain retry_skipped stage=%s reason=request_retry_budget http_code=%s", stage, code)
             logger.error(
                 "Gemini explain call stage=%s retry_count=%d http_code=%s api_status=%s outcome=final_failure",
                 stage, retry_count, code, status,
             )
+            raise
+        except httpx.TimeoutException:
+            outcome = "client_timeout"
+            logger.error("Gemini explain timeout_origin=client stage=%s retry_count=%d", stage, retry_count)
+            raise
+        except TimeoutError:
+            outcome = "request_budget_timeout"
+            logger.error("Gemini explain timeout_origin=request_budget stage=%s retry_count=%d", stage, retry_count)
             raise
         except ValueError:
             logger.error(
@@ -521,6 +599,13 @@ def explain_json_call(instruction, payload, output_model, item_id):
                 validation_stage,
             )
             raise
+        finally:
+            logger.info(
+                "Gemini explain attempt stage=%s item_index=%d request_attempt=%d retry_count=%d "
+                "http_code=%s outcome=%s elapsed_ms=%d",
+                stage, budget.item_index, budget.attempts, retry_count, http_code, outcome,
+                (time.monotonic() - call_started) * 1000 if call_elapsed_ms is None else call_elapsed_ms,
+            )
     if retry_count:
         logger.info(
             "Gemini explain call stage=%s retry_count=%d http_code=%s outcome=retry_succeeded",
@@ -559,6 +644,7 @@ def explain_json_call(instruction, payload, output_model, item_id):
             validation_stage, shape,
         )
         raise ValueError("Gemini returned a mismatched item_id")
+    budget.remaining()
     return result
 
 
@@ -615,10 +701,19 @@ def explain_document(req: ExplainRequest):
         return ExplainResponse(cards=[])
     started = time.monotonic()
     stage = "model_lookup"
+    budget = ExplainBudget()
+    budget_token = _explain_budget.set(budget)
     try:
-        verify_model()
+        lookup_started = time.monotonic()
+        try:
+            verify_model(http_options=budget.http_options(EXPLAIN_LOOKUP_SECONDS), deadline=budget.deadline)
+            budget.remaining()
+        finally:
+            logger.info("Gemini explain lookup elapsed_ms=%d", (time.monotonic() - lookup_started) * 1000)
         cards = []
-        for item in req.items:
+        for index, item in enumerate(req.items, 1):
+            budget.item_index = index
+            budget.remaining()
             source = item.model_dump()
             source["check_item_description"] = CHECK_ITEM_DEFINITIONS[item.check_item]
             feedback = None
@@ -647,7 +742,9 @@ def explain_document(req: ExplainRequest):
                     break
                 previous = draft.model_dump()
                 feedback = review.review_reason
-        logger.info("Gemini explain succeeded elapsed_ms=%d", (time.monotonic() - started) * 1000)
+        budget.remaining()
+        logger.info("Gemini explain succeeded elapsed_ms=%d attempts=%d retries=%d",
+                    (time.monotonic() - started) * 1000, budget.attempts, budget.retries)
         return ExplainResponse(cards=cards)
     except Exception as exc:
         code, status, reason = extract_error_diagnostics(exc)
@@ -676,6 +773,8 @@ def explain_document(req: ExplainRequest):
             category, stage, code, status, reason, (time.monotonic() - started) * 1000,
         )
         raise ServiceHTTPException(502, GEMINI_ERROR_CODES.get(category, "GEMINI_API_ERROR")) from None
+    finally:
+        _explain_budget.reset(budget_token)
 
 
 def extract_error_diagnostics(exc):
