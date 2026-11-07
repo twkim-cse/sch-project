@@ -23,6 +23,7 @@ from google.genai import types, errors
 from dotenv import load_dotenv
 from extract_planning import plan_extraction, ExtractPlanningError
 import extract_recheck
+from extract_gate import EXTRACT_GATE
 from refund_validation import is_clear_loan_only
 
 # .env 파일에서 환경변수 불러오기
@@ -895,6 +896,7 @@ def extract_instruction_for(check_items):
     )
 
 
+@EXTRACT_GATE.limit_call
 def call_extract_batch(contents, recovery=None, instruction=None):
     # Same bounded transient-error policy as explain. Share the existing process
     # window so extract batches do not burst alongside explain calls.
@@ -1117,3 +1119,15 @@ def classify_document(req: ClassifyRequest):
             category, stage, type(exc).__name__, (time.monotonic() - started) * 1000,
         )
         raise ServiceHTTPException(502, GEMINI_ERROR_CODES.get(category, "GEMINI_API_ERROR")) from None
+
+
+# Stateless bulk planning/merge only. Existing extract/explain handlers and
+# Gemini settings are unchanged; Spring retains job state and part checkpoints.
+from bulk_extract import install_bulk_routes
+install_bulk_routes(app, ExtractRequest, ExtractResponse, extract_instruction_for,
+                    CHECK_ITEM_DEFINITIONS, validate_extractions)
+
+# Explicit opt-in candidate scope. Existing full-document bulk routes stay lossless.
+from candidate_filter import install_candidate_routes
+install_candidate_routes(app, ExtractRequest, CheckItem, CHECK_ITEM_DEFINITIONS,
+                         extract_instruction_for, validate_extractions)

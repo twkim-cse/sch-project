@@ -1,0 +1,350 @@
+--- a/backend/src/main/java/com/insurance/explainer/analysis/AiClient.java
++++ b/backend/src/main/java/com/insurance/explainer/analysis/AiClient.java
+@@ -20,18 +20,15 @@
+     private static final Duration TIMEOUT = Duration.ofMinutes(5);
+ 
+     private final WebClient aiWebClient;
++    private final BulkExtractCoordinator bulkExtract;
+ 
+     public AiClient(WebClient aiWebClient) {
+         this.aiWebClient = aiWebClient;
++        this.bulkExtract = new BulkExtractCoordinator(aiWebClient);
+     }
+ 
+     public ExtractResponse extract(ExtractRequest request) {
+-        return callWithRetry("/ai/extract", () -> aiWebClient.post()
+-                .uri("/ai/extract")
+-                .bodyValue(request)
+-                .retrieve()
+-                .bodyToMono(ExtractResponse.class)
+-                .block(TIMEOUT));
++        return bulkExtract.extract(request);
+     }
+ 
+     public ExplainResponse explain(ExplainRequest request) {
+--- /dev/null
++++ b/backend/src/main/java/com/insurance/explainer/analysis/BulkExtractCoordinator.java
+@@ -0,0 +1,215 @@
++package com.insurance.explainer.analysis;
++
++import com.fasterxml.jackson.databind.JsonNode;
++import com.fasterxml.jackson.databind.ObjectMapper;
++import com.fasterxml.jackson.databind.node.ArrayNode;
++import com.fasterxml.jackson.databind.node.ObjectNode;
++import com.insurance.explainer.analysis.ai.ExtractRequest;
++import com.insurance.explainer.analysis.ai.ExtractResponse;
++import org.springframework.web.reactive.function.client.WebClient;
++import org.springframework.web.reactive.function.client.WebClientResponseException;
++
++import java.time.Duration;
++import java.util.HashMap;
++import java.util.HashSet;
++import java.util.LinkedHashMap;
++import java.util.Map;
++import java.util.Set;
++import java.util.concurrent.Semaphore;
++import java.util.concurrent.TimeUnit;
++
++/** PROPOSAL ONLY: install through the accompanying patch after team review.
++ * Spring's existing async AnalysisRunner owns job status. No Gemini parallelism,
++ * no automatic whole-job retries, no partial ExtractResponse on failure.
++ * Checkpoints are process-local, bounded, and must eventually use the backend's
++ * authenticated retention/deletion lifecycle or a durable store.
++ */
++public final class BulkExtractCoordinator {
++    private static final Set<String> SAFE_CODES = Set.of(
++            "REQUEST_VALIDATION_ERROR", "EXTRACT_INPUT_BUDGET_EXCEEDED", "SERVER_CONFIGURATION_ERROR",
++            "GEMINI_MODEL_ERROR", "GEMINI_TIMEOUT", "GEMINI_AUTHENTICATION_ERROR", "GEMINI_RESPONSE_VALIDATION_ERROR",
++            "GEMINI_API_ERROR", "INTERNAL_ERROR", "SERVICE_UNAVAILABLE", "BULK_INPUT_BUDGET_EXCEEDED",
++            "BULK_UNSPLITTABLE_CLAUSE", "BULK_PLAN_MISMATCH", "BULK_INCOMPLETE", "BULK_RESULT_INVALID",
++            "BULK_JOB_BUDGET_EXCEEDED");
++    private static final long JOB_NANOS = Duration.ofHours(4).toNanos();
++    private static final long RETENTION_NANOS = Duration.ofHours(24).toNanos();
++    private static final int MAX_JOBS = 32, MAX_ATTEMPTS = 600;
++    private final WebClient client;
++    private final ObjectMapper mapper = new ObjectMapper();
++    private final Map<String, Job> jobs = new HashMap<>();
++    private final Semaphore activeJob = new Semaphore(1, true);
++
++    private static final class Job {
++        final String planId;
++        final long created = System.nanoTime();
++        final Map<String, JsonNode> completed = new LinkedHashMap<>();
++        final Map<String, Integer> attempts = new HashMap<>();
++        long elapsed;
++        long checkpointBytes;
++        int failureStatus;
++        String failureCode;
++        Job(String planId) { this.planId = planId; }
++    }
++
++    public static final class BulkFailure extends RuntimeException {
++        public final int status;
++        public final String code;
++        BulkFailure(int status, String code) {
++            super("Bulk extraction failed: " + code);
++            this.status = status;
++            this.code = code;
++        }
++    }
++
++    public BulkExtractCoordinator(WebClient client) {
++        // Planning returns request bodies; the default WebClient aggregation
++        // budget can be too small. This clone affects only bulk operations.
++        this.client = client.mutate().codecs(c -> c.defaultCodecs()
++                .maxInMemorySize(40 * 1024 * 1024)).build();
++    }
++
++    public ExtractResponse extract(ExtractRequest source) {
++        boolean acquired = false;
++        try {
++            acquired = activeJob.tryAcquire(30, TimeUnit.SECONDS);
++            if (!acquired) throw new BulkFailure(503, "BULK_BUSY");
++            return extractSerial(source);
++        } catch (InterruptedException e) {
++            Thread.currentThread().interrupt();
++            throw new BulkFailure(502, "BULK_INTERRUPTED");
++        } finally {
++            if (acquired) activeJob.release();
++        }
++    }
++
++    private ExtractResponse extractSerial(ExtractRequest source) {
++        long planningStarted = System.nanoTime();
++        JsonNode plan = post("/ai/extract/plan", source, Duration.ofSeconds(30));
++        if (!plan.path("preservation_verified").asBoolean(false)
++                || !plan.path("parts").isArray() || plan.path("parts").size() > 500
++                || !plan.path("plan_id").isTextual()) {
++            throw new BulkFailure(502, "BULK_PLAN_MISMATCH");
++        }
++        String planId = plan.path("plan_id").asText();
++        Job job;
++        synchronized (jobs) {
++            // Lazy bounded retention. Team must link explicit document deletion
++            // and authorization to these checkpoints before production use.
++            jobs.entrySet().removeIf(e -> System.nanoTime() - e.getValue().created > RETENTION_NANOS);
++            if (!jobs.containsKey(source.analysisId()) && jobs.size() >= MAX_JOBS)
++                throw new BulkFailure(503, "BULK_CHECKPOINT_CAPACITY");
++            job = jobs.computeIfAbsent(source.analysisId(), k -> new Job(planId));
++        }
++        synchronized (job) {
++            long started = System.nanoTime();
++            job.elapsed += started - planningStarted;
++            try {
++                if (!job.planId.equals(planId)) throw new BulkFailure(422, "BULK_PLAN_MISMATCH");
++                if (job.failureCode != null && !retryable(job.failureStatus, job.failureCode))
++                    throw new BulkFailure(job.failureStatus, job.failureCode);
++                for (JsonNode part : plan.path("parts")) {
++                    String partId = part.path("part_id").asText();
++                    if (job.completed.containsKey(partId)) continue;
++                    int total = job.attempts.values().stream().mapToInt(Integer::intValue).sum();
++                    if (total >= MAX_ATTEMPTS || job.attempts.getOrDefault(partId, 0) >= 2)
++                        throw new BulkFailure(502, "BULK_JOB_BUDGET_EXCEEDED");
++                    Duration timeout = remaining(job, started, 270);
++                    job.attempts.merge(partId, 1, Integer::sum);
++                    JsonNode response = post("/ai/extract", part.path("request"), timeout);
++                    validatePart(part.path("request"), response);
++                    remaining(job, started, 270); // reject responses arriving after the budget
++                    long bytes = mapper.writeValueAsBytes(response).length;
++                    if (job.checkpointBytes + bytes > 32_000_000)
++                        throw new BulkFailure(413, "BULK_CHECKPOINT_BUDGET");
++                    job.completed.put(partId, response);
++                    job.checkpointBytes += bytes;
++                    job.failureCode = null;
++                }
++                ObjectNode merge = mapper.createObjectNode();
++                merge.set("source_request", mapper.valueToTree(source));
++                merge.put("plan_id", planId);
++                ArrayNode results = merge.putArray("part_results");
++                for (JsonNode part : plan.path("parts")) {
++                    String partId = part.path("part_id").asText();
++                    if (!job.completed.containsKey(partId)) throw new BulkFailure(409, "BULK_INCOMPLETE");
++                    ObjectNode entry = results.addObject();
++                    entry.put("part_id", partId);
++                    entry.set("response", job.completed.get(partId));
++                }
++                JsonNode merged = post("/ai/extract/merge", merge, remaining(job, started, 30));
++                remaining(job, started, 30);
++                validateMergedIds(source, merged);
++                ExtractResponse result = mapper.treeToValue(merged, ExtractResponse.class);
++                synchronized (jobs) { jobs.remove(source.analysisId(), job); }
++                return result;
++            } catch (BulkFailure e) {
++                job.failureStatus = e.status;
++                job.failureCode = e.code;
++                throw e;
++            } catch (Exception e) {
++                // Never include raw exception messages or HTTP bodies.
++                job.failureStatus = 502;
++                job.failureCode = "BULK_CLIENT_ERROR";
++                throw new BulkFailure(502, "BULK_CLIENT_ERROR");
++            } finally {
++                job.elapsed += System.nanoTime() - started;
++            }
++        }
++    }
++
++    private Duration remaining(Job job, long started, int maxSeconds) {
++        long remaining = JOB_NANOS - job.elapsed - (System.nanoTime() - started);
++        if (remaining <= 0) throw new BulkFailure(502, "BULK_JOB_BUDGET_EXCEEDED");
++        return Duration.ofNanos(Math.min(Duration.ofSeconds(maxSeconds).toNanos(), remaining));
++    }
++
++    private JsonNode post(String path, Object body, Duration timeout) {
++        try {
++            JsonNode response = client.post().uri(path).bodyValue(body).retrieve()
++                    .bodyToMono(JsonNode.class).block(timeout);
++            if (response == null) throw new BulkFailure(502, "BULK_RESULT_INVALID");
++            return response;
++        } catch (WebClientResponseException e) {
++            String code = "BULK_HTTP_ERROR";
++            try {
++                String candidate = mapper.readTree(e.getResponseBodyAsString()).path("code").asText();
++                if (SAFE_CODES.contains(candidate)) code = candidate;
++            } catch (Exception ignored) { }
++            throw new BulkFailure(e.getStatusCode().value(), code);
++        } catch (BulkFailure e) {
++            throw e;
++        } catch (Exception e) {
++            // Timeout/connection outcome is ambiguous. No blind automatic retry.
++            throw new BulkFailure(502, "BULK_CLIENT_ERROR");
++        }
++    }
++
++    private static boolean retryable(int status, String code) {
++        // A subsequent authorized call can resume; this is not an auto retry.
++        return status == 429 || status == 503 || status == 504
++                || (status == 502 && (code.equals("GEMINI_TIMEOUT") || code.equals("GEMINI_API_ERROR")));
++    }
++
++    private static String normalize(String s) { return s.replaceAll("(?U)\\s+", " "); }
++
++    private static void validatePart(JsonNode request, JsonNode response) {
++        if (!response.isObject() || response.size() != 1 || !response.path("extractions").isArray())
++            throw new BulkFailure(502, "BULK_RESULT_INVALID");
++        Map<String, String> texts = new HashMap<>();
++        Set<Integer> items = new HashSet<>();
++        request.path("clauses").forEach(c -> texts.put(c.path("clause_id").asText(), c.path("text").asText()));
++        request.path("check_items").forEach(i -> items.add(i.asInt()));
++        for (JsonNode row : response.path("extractions")) {
++            String cid = row.path("clause_id").asText();
++            String quote = row.path("quote").asText();
++            if (row.size() != 3 || !row.path("clause_id").isTextual() || !row.path("quote").isTextual()
++                    || !row.path("check_item").isIntegralNumber() || !items.contains(row.path("check_item").asInt())
++                    || !texts.containsKey(cid) || quote.isBlank() || !normalize(texts.get(cid)).contains(normalize(quote)))
++                throw new BulkFailure(502, "BULK_RESULT_INVALID");
++        }
++    }
++
++    private void validateMergedIds(ExtractRequest source, JsonNode merged) {
++        validatePart(mapper.valueToTree(source), merged);
++    }
++}
+--- /dev/null
++++ b/backend/src/test/java/com/insurance/explainer/analysis/BulkExtractCoordinatorTest.java
+@@ -0,0 +1,105 @@
++package com.insurance.explainer.analysis;
++
++import com.fasterxml.jackson.databind.JsonNode;
++import com.fasterxml.jackson.databind.ObjectMapper;
++import com.fasterxml.jackson.databind.node.ArrayNode;
++import com.fasterxml.jackson.databind.node.ObjectNode;
++import com.insurance.explainer.analysis.ai.ClauseDto;
++import com.insurance.explainer.analysis.ai.ExtractRequest;
++import com.sun.net.httpserver.HttpServer;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.springframework.web.reactive.function.client.WebClient;
++
++import java.net.InetSocketAddress;
++import java.nio.charset.StandardCharsets;
++import java.util.List;
++import java.util.Map;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.atomic.AtomicInteger;
++
++import static org.assertj.core.api.Assertions.*;
++
++/** Local HTTP stub only; no Gemini, real policies, or secrets. */
++class BulkExtractCoordinatorTest {
++    private HttpServer server;
++    private BulkExtractCoordinator coordinator;
++    private final ObjectMapper mapper = new ObjectMapper();
++    private final Map<String, AtomicInteger> calls = new ConcurrentHashMap<>();
++    private int failureStatus = 503;
++    private boolean mergeFailure;
++    private ExtractRequest source;
++
++    @BeforeEach void setUp() throws Exception {
++        source = new ExtractRequest("synthetic", List.of(1), List.of(
++                clause("one"), clause("two"), clause("three")));
++        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
++        server.createContext("/ai/extract", exchange -> {
++            String path = exchange.getRequestURI().getPath();
++            JsonNode body = mapper.readTree(exchange.getRequestBody());
++            ObjectNode response = mapper.createObjectNode();
++            int status = 200;
++            if (path.endsWith("/plan")) {
++                response.put("plan_id", "plan");response.put("preservation_verified", true);
++                ArrayNode parts = response.putArray("parts");
++                for (ClauseDto c : source.clauses()) {
++                    ObjectNode p = parts.addObject();p.put("part_id", c.clauseId());
++                    p.set("request", mapper.valueToTree(new ExtractRequest("synthetic", List.of(1), List.of(c))));
++                }
++            } else if (path.endsWith("/merge")) {
++                calls.computeIfAbsent("merge", k -> new AtomicInteger()).incrementAndGet();
++                if (mergeFailure) { status=409;response.put("code", "BULK_INCOMPLETE"); }
++                else {
++                    ArrayNode rows=response.putArray("extractions");
++                    for (ClauseDto c:source.clauses()) {
++                        ObjectNode row=rows.addObject();row.put("check_item",1);row.put("clause_id",c.clauseId());row.put("quote",c.text());
++                    }
++                }
++            } else {
++                String id=body.path("clauses").get(0).path("clause_id").asText();
++                int count=calls.computeIfAbsent(id,k->new AtomicInteger()).incrementAndGet();
++                if (id.equals("two") && count==1) {
++                    status=failureStatus;response.put("code",status==413 ? "EXTRACT_INPUT_BUDGET_EXCEEDED" : "GEMINI_API_ERROR");
++                } else {
++                    ObjectNode row=response.putArray("extractions").addObject();
++                    row.put("check_item",1);row.put("clause_id",id);
++                    row.put("quote",body.path("clauses").get(0).path("text").asText());
++                }
++            }
++            byte[] bytes=mapper.writeValueAsBytes(response);
++            exchange.getResponseHeaders().set("Content-Type","application/json");
++            exchange.sendResponseHeaders(status,bytes.length);
++            exchange.getResponseBody().write(bytes);exchange.close();
++        });
++        server.start();
++        coordinator=new BulkExtractCoordinator(WebClient.builder().baseUrl("http://127.0.0.1:"+server.getAddress().getPort()).build());
++    }
++
++    private ClauseDto clause(String id) { return new ClauseDto(id,null,"synthetic","article","title",null,1,false,"Synthetic clause."); }
++    @AfterEach void stop() { if(server!=null)server.stop(0); }
++
++    @Test void stops_then_resumes_only_failed_and_later_parts() {
++        assertThatThrownBy(()->coordinator.extract(source)).isInstanceOf(BulkExtractCoordinator.BulkFailure.class);
++        assertThat(calls.get("one").get()).isEqualTo(1);
++        assertThat(calls).doesNotContainKeys("three","merge");
++        assertThat(coordinator.extract(source).extractions()).hasSize(3);
++        assertThat(calls.get("one").get()).isEqualTo(1);
++        assertThat(calls.get("two").get()).isEqualTo(2);
++    }
++
++    @Test void budget_413_is_not_retried_on_resume() {
++        failureStatus=413;
++        assertThatThrownBy(()->coordinator.extract(source)).isInstanceOf(BulkExtractCoordinator.BulkFailure.class);
++        assertThatThrownBy(()->coordinator.extract(source)).isInstanceOf(BulkExtractCoordinator.BulkFailure.class);
++        assertThat(calls.get("two").get()).isEqualTo(1);
++        assertThat(calls).doesNotContainKeys("three","merge");
++    }
++
++    @Test void merge_failure_never_returns_partial_success() {
++        failureStatus=503;mergeFailure=true;
++        assertThatThrownBy(()->coordinator.extract(source)).isInstanceOf(BulkExtractCoordinator.BulkFailure.class);
++        assertThatThrownBy(()->coordinator.extract(source)).isInstanceOf(BulkExtractCoordinator.BulkFailure.class);
++        assertThat(calls.get("merge").get()).isEqualTo(1);
++    }
++}

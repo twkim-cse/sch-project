@@ -31,8 +31,18 @@ Docker는 기존 `app.main:app` 진입점을 유지하며 실제 구현을 로�
 
 ## 오프라인 검증
 
+선택적 제한 병렬 실행기와 서버 extract gate는
+[README_parallel_extract.md](README_parallel_extract.md)를 참고하세요. 기본 동시성은 1입니다.
+
+선택적 후보 사전 검색은 [README_candidate_filter.md](README_candidate_filter.md)를 참고하세요.
+기존 전체 무손실 경로는 그대로이며 후보 분석 범위를 명시적으로 선택할 때만 사용합니다.
+
+대용량 약관 분할 계획·전체 결과 병합 및 별도 Spring 제안 패치는
+[README_bulk_extract.md](README_bulk_extract.md)를 참고하세요. 기존 extract에 전체 JSON을
+다시 보내는 것만으로 413이 해결되지는 않습니다. Spring 연동 변경·배포가 별도로 필요합니다.
+
 ```powershell
-python -m unittest -q test_explain test_real_policy_mock test_contract_audit test_extract_validation test_extract_batching test_extract_categories test_extract_refund test_extract_recheck test_extract_duty test_extract_recheck_instruction test_extract_accuracy test_refund_postvalidation test_extract_pipeline test_explain_stability
+python -m unittest -q test_explain test_real_policy_mock test_contract_audit test_extract_validation test_extract_batching test_extract_categories test_extract_refund test_extract_recheck test_extract_duty test_extract_recheck_instruction test_extract_accuracy test_refund_postvalidation test_extract_pipeline test_explain_stability test_bulk_extract test_candidate_filter test_bulk_parallel
 ```
 
 테스트는 dotenv와 Gemini 호출을 모의 처리합니다. 실제 API 테스트는 자동으로 실행되지 않습니다.
