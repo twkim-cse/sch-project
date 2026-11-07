@@ -64,4 +64,19 @@ public class AnalysisController {
         }
         return ResultResponseBuilder.build(record);
     }
+
+    // Existing status enum stays compatible. PARTIAL is explicit here;
+    // incomplete results remain unavailable from /result.
+    @GetMapping("/{analysisId}/progress")
+    public java.util.Map<String, Object> getProgress(@PathVariable String analysisId) {
+        BulkExtractCoordinator.Progress progress = analysisService.progress(analysisId);
+        return progress == null ? java.util.Map.of("state", "NOT_STARTED", "fullDocumentSuccess", false,"resumable",analysisService.resumable(analysisId))
+                : java.util.Map.of("extraction", progress,"resumable",analysisService.resumable(analysisId));
+    }
+
+    @PostMapping("/{analysisId}/resume")
+    public ResponseEntity<StartResponse> resume(@PathVariable String analysisId) {
+        analysisService.resume(analysisId);
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(new StartResponse(analysisId, "RUNNING"));
+    }
 }

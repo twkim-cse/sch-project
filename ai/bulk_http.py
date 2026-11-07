@@ -47,7 +47,7 @@ class HttpPartSender:
         if response.status_code!=200:
             code=payload.get('code') if isinstance(payload,dict) else None
             exc=BulkHttpError(response.status_code,code if isinstance(code,str) and code in SAFE_CODES else 'BULK_HTTP_ERROR')
-            if response.status_code==429:
+            if response.status_code in (429,503,504) or (response.status_code==502 and exc.code in ('GEMINI_API_ERROR','GEMINI_TIMEOUT')):
                 value=response.headers.get('Retry-After')
                 if value:
                     try:delay=float(value)

@@ -6,6 +6,7 @@ COPY app ./app
 COPY app.py ./app.py
 COPY extract_planning.py extract_recheck.py refund_validation.py bulk_extract.py candidate_filter.py ./
 COPY bulk_parallel.py bulk_http.py extract_gate.py ./
+COPY extract_resilience.py ./
 RUN uv pip install --system .
 EXPOSE 8001
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]

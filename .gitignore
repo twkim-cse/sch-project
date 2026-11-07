@@ -1,7 +1,25 @@
 # 환경 변수
 .env
+.env.*
 *.env
 !.env.example
+!.env.*.example
+
+# Private policy inputs, outputs and local runtime state (synthetic fixtures stay tracked)
+**/local_policy/
+**/test_results/
+**/checkpoints/
+**/*.pdf
+**/*.zip
+**/*_extract_request.json
+**/*_classify_request.json
+**/*_explain_request.json
+**/*real_policy*.json
+**/ABL*.json
+**/CM295F*.json
+**/New_Dental*.json
+*.log
+**/*.log
 
 # IDE
 .idea/
@@ -9,6 +27,7 @@
 *.iml
 
 # Java / Gradle (backend)
+**/.local-state/
 backend/build/
 backend/.gradle/
 backend/out/

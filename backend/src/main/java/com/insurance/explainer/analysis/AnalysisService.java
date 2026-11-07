@@ -30,6 +30,8 @@ public class AnalysisService {
     private final DocumentStore documentStore;
     private final AnalysisStore analysisStore;
     private final AnalysisRunner analysisRunner;
+    @org.springframework.beans.factory.annotation.Autowired
+    private AiClient aiClient;
 
     public AnalysisService(DocumentStore documentStore, AnalysisStore analysisStore, AnalysisRunner analysisRunner) {
         this.documentStore = documentStore;
@@ -73,5 +75,29 @@ public class AnalysisService {
 
         analysisRunner.runAsync(analysisId);
         return queued;
+    }
+
+    public BulkExtractCoordinator.Progress progress(String analysisId) {
+        if (analysisStore.get(analysisId) == null) throw ApiException.notFound("분석 작업을 찾을 수 없습니다.");
+        return aiClient.extractProgress(analysisId);
+    }
+
+    public synchronized void resume(String analysisId) {
+        AnalysisRecord record = analysisStore.get(analysisId);
+        if (record == null) throw ApiException.notFound("분석 작업을 찾을 수 없습니다.");
+        DocumentRecord document = documentStore.get(record.documentId());
+        boolean beforeDispatch=aiClient.durableEnabled() && "ANALYSIS_INTERRUPTED".equals(record.errorCode())
+                && aiClient.extractProgress(analysisId)==null;
+        if (document == null || document.expiresAt()!=null && !document.expiresAt().isAfter(java.time.OffsetDateTime.now())
+                || record.status() != AnalysisStatus.FAILED || !(beforeDispatch || aiClient.canResumeExtract(analysisId)))
+            throw ApiException.notReady("재개 가능한 추출 체크포인트가 없습니다.");
+        analysisStore.save(record.withStep(AnalysisStep.EXTRACTING));
+        analysisRunner.runAsync(analysisId);
+    }
+
+    public boolean resumable(String id) {
+        AnalysisRecord record=analysisStore.get(id);
+        return record!=null && record.status()==AnalysisStatus.FAILED && (aiClient.canResumeExtract(id)
+                || aiClient.durableEnabled() && "ANALYSIS_INTERRUPTED".equals(record.errorCode()) && aiClient.extractProgress(id)==null);
     }
 }

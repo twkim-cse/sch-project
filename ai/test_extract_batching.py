@@ -209,15 +209,15 @@ class ExtractBatchingTests(unittest.TestCase):
     def test_first_batch_persistent_503_aborts_all_following(self):
         self.mock.models.generate_content.side_effect=errors.ServerError(503,{'error':{'message':'PRIVATE'}})
         self.assertEqual(self.request(self.clauses(75)).status_code,502)
-        self.assertEqual(self.mock.models.generate_content.call_count,2)
+        self.assertEqual(self.mock.models.generate_content.call_count,3)
         self.assertEqual(self.sent_batches()[0],self.sent_batches()[1])
-        self.h.sleep.assert_called_once_with(2)
+        self.assertEqual([c.args[0] for c in self.h.sleep.call_args_list],[2,4])
 
     def test_middle_batch_persistent_503_never_calls_last_batch(self):
         error=errors.ServerError(503,{'error':{'message':'PRIVATE'}})
-        self.mock.models.generate_content.side_effect=[self.empty_response(),error,error]
+        self.mock.models.generate_content.side_effect=[self.empty_response(),error,error,error]
         self.assertEqual(self.request(self.clauses(75)).status_code,502)
-        self.assertEqual(self.mock.models.generate_content.call_count,3)
+        self.assertEqual(self.mock.models.generate_content.call_count,4)
         batches=self.sent_batches()
         self.assertEqual(batches[1],batches[2])
         self.assertNotEqual(batches[0],batches[1])

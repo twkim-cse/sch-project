@@ -23,6 +23,7 @@ from google.genai import types, errors
 from dotenv import load_dotenv
 from extract_planning import plan_extraction, ExtractPlanningError
 import extract_recheck
+import extract_resilience
 from extract_gate import EXTRACT_GATE
 from refund_validation import is_clear_loan_only
 
@@ -89,7 +90,11 @@ async def http_error_handler(request, exc):
     if code not in ERROR_MESSAGES:
         code = {404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED", 503: "SERVICE_UNAVAILABLE"}.get(exc.status_code, "HTTP_ERROR")
     # Do not echo detail, headers, path, query, or any input values.
-    return error_response(exc.status_code, code)
+    response = error_response(exc.status_code, code)
+    seconds = getattr(exc, 'retry_after_seconds', None)
+    if type(seconds) is int and 0 < seconds <= 2_147_483_647:
+        response.headers['Retry-After'] = str(seconds)
+    return response
 
 
 @app.exception_handler(ResponseValidationError)
@@ -900,23 +905,31 @@ def extract_instruction_for(check_items):
 def call_extract_batch(contents, recovery=None, instruction=None):
     # Same bounded transient-error policy as explain. Share the existing process
     # window so extract batches do not burst alongside explain calls.
-    for attempt in range(2):
+    deadline = time.monotonic() + extract_resilience.CALL_SECONDS
+    if recovery is not None:
+        deadline = min(deadline, recovery['deadline'])
+    quota_retries = 0
+    retry_wait = 0.0
+    for attempt in range(extract_resilience.MAX_ATTEMPTS):
+        extract_service_cooldown.check()
         if recovery is None:
-            explain_call_limiter.acquire()
-            options = {}
+            explain_call_limiter.acquire(deadline=deadline)
         else:
             if recovery['attempts'] >= extract_recheck.MAX_ATTEMPTS:
                 raise TimeoutError()
             explain_call_limiter.acquire(deadline=recovery['deadline'])
-            remaining = recovery['deadline'] - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError()
             recovery['attempts'] += 1
-            options = {'http_options': types.HttpOptions(
-                timeout=max(1, int(remaining * 1000)),
-                retry_options=types.HttpRetryOptions(attempts=1))}
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError()
+        options = {'http_options': types.HttpOptions(
+            timeout=max(1, int(min(remaining, extract_resilience.ATTEMPT_SECONDS) * 1000)),
+            retry_options=types.HttpRetryOptions(attempts=1))}
+        call_started = time.monotonic()
+        logger.info("Gemini extract call attempt=%d retry_count=%d timeout_ms=%d",
+                    attempt + 1, attempt, options['http_options'].timeout)
         try:
-            return client.models.generate_content(
+            response = client.models.generate_content(
                 model=MODEL_NAME, contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=EXTRACT_INSTRUCTION if instruction is None else instruction,
@@ -924,22 +937,42 @@ def call_extract_batch(contents, recovery=None, instruction=None):
                     **options,
                 ),
             )
+            if time.monotonic() >= deadline:
+                raise TimeoutError()
+            logger.info("Gemini extract call attempt=%d outcome=succeeded elapsed_ms=%d",
+                        attempt + 1, (time.monotonic() - call_started) * 1000)
+            return response
         except errors.APIError as exc:
             code, status, _ = extract_error_diagnostics(exc)
+            logger.warning("Gemini extract call attempt=%d http_code=%s outcome=failed elapsed_ms=%d",
+                           attempt + 1, code, (time.monotonic() - call_started) * 1000)
             if code == 429:
                 logger.warning("Gemini extract quota_warning=daily_quota_not_resolved_by_pacing")
-            if code not in (429, 503) or attempt == 1:
+            if code not in (429, 503) or attempt == extract_resilience.MAX_ATTEMPTS - 1 or (code == 429 and quota_retries >= 1):
+                if code == 503:
+                    extract_service_cooldown.defer(max(extract_resilience.COOLDOWN_SECONDS, extract_resilience.retry_after(exc) or 0))
                 logger.error("Gemini extract retry_count=%d http_code=%s outcome=final_failure action=abort_remaining_batches", attempt, code)
                 raise
-            delay = explain_429_delay(exc) if code == 429 else 2
-            logger.warning("Gemini extract retry_count=1 http_code=%s api_status=%s wait_seconds=%.3f",
-                           code, status, delay)
+            delay = explain_429_delay(exc) if code == 429 else extract_resilience.delay(exc, attempt)
+            if code == 503 and (retry_wait + delay > extract_resilience.RETRY_WAIT_SECONDS or time.monotonic() + delay >= deadline):
+                extract_service_cooldown.defer(max(extract_resilience.COOLDOWN_SECONDS, delay))
+                logger.warning("Gemini extract retry_skipped reason=wait_or_deadline_budget http_code=503 action=cooldown")
+                raise
+            if code == 503:
+                retry_wait += delay
+            else:
+                quota_retries += 1
+            logger.warning("Gemini extract retry_count=%d http_code=%s api_status=%s wait_seconds=%.3f",
+                           attempt + 1, code, status, delay)
             while delay > 0:
                 pause = min(delay, 60)
-                if recovery is not None and time.monotonic() + pause >= recovery['deadline']:
+                if time.monotonic() + pause >= deadline:
                     raise TimeoutError()
                 time.sleep(pause)
                 delay -= pause
+
+
+extract_service_cooldown = extract_resilience.Cooldown()
 
 
 @app.post("/ai/extract", response_model=ExtractResponse)
@@ -962,8 +995,11 @@ def extract_document(req: ExtractRequest):
         batches, score_summary = plan_extraction(req.clauses, req.check_items, definitions, instruction)
         logger.info("Gemini extract plan input_clauses=%d batches=%d score_distribution=%s",
                     len(req.clauses), len(batches), json.dumps(score_summary, sort_keys=True))
+        stage = "service_cooldown"
+        extract_service_cooldown.check()
         stage = "model_lookup"
-        verify_model()
+        lookup_deadline = time.monotonic() + 15
+        verify_model(http_options=types.HttpOptions(timeout=15_000, retry_options=types.HttpRetryOptions(attempts=1)), deadline=lookup_deadline)
         merged = []
         for index, batch in enumerate(batches):
             logger.info("Gemini extract batch=%d clause_count=%d input_budget_bytes=%d context_copies=%d context_reason=%s context_omitted_budget=%s",
@@ -1012,8 +1048,9 @@ def extract_document(req: ExtractRequest):
         logger.info("Gemini extract succeeded analyzed_clauses=%d completed_batches=%d elapsed_ms=%d",
                     analyzed, completed, (time.monotonic() - started) * 1000)
         return result
-    except ExtractPlanningError:
-        logger.warning("Gemini extract rejected stage=batch_planning reason=input_budget_or_batch_limit input_clauses=%d", len(req.clauses))
+    except ExtractPlanningError as exc:
+        logger.warning("Gemini extract rejected stage=batch_planning reason=%s input_clauses=%d single_input_bytes=%s planned_batches=%s",
+                       exc.reason, len(req.clauses), exc.input_bytes, exc.batch_count)
         raise ServiceHTTPException(413, "EXTRACT_INPUT_BUDGET_EXCEEDED") from None
     except Exception as exc:
         code = getattr(exc, "code", None)
@@ -1037,7 +1074,13 @@ def extract_document(req: ExtractRequest):
             category, stage, type(exc).__name__, http_code, api_status, reason,
             analyzed, completed, (time.monotonic() - started) * 1000,
         )
-        raise ServiceHTTPException(502, GEMINI_ERROR_CODES.get(category, "GEMINI_API_ERROR")) from None
+        failure = ServiceHTTPException(502, GEMINI_ERROR_CODES.get(category, "GEMINI_API_ERROR"))
+        if http_code == 503:
+            seconds = extract_service_cooldown.header_seconds()
+            if seconds:
+                failure.retry_after_seconds = seconds
+                logger.warning("Gemini extract cooldown_seconds=%d action=checkpoint_then_resume", seconds)
+        raise failure from None
 
 # 서버 상태 확인용 헬스체크 엔드포인트
 @app.get("/health")

@@ -1,0 +1,12 @@
+.local-state/
+build/
+.gradle/
+.env
+.env.*
+*.pdf
+**/*.pdf
+local_policy/
+test_results/
+checkpoints/
+*.log
+**/*.log
