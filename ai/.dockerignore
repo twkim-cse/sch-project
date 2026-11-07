@@ -8,3 +8,8 @@
 !extract_planning.py
 !extract_recheck.py
 !refund_validation.py
+!bulk_extract.py
+!candidate_filter.py
+!bulk_parallel.py
+!bulk_http.py
+!extract_gate.py
