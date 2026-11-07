@@ -172,6 +172,102 @@ class AnalysisServiceTest {
         assertThat(finalRecord.errorCode()).isEqualTo("ANALYSIS_FAILED");
     }
 
+    // ---- 추출/해설 배치 하나만 실패해도 분석 전체가 FAILED로 끝나지 않아야 한다 ----
+
+    @Test
+    void 추출_배치_하나만_실패해도_나머지_점검항목은_결과에_포함되고_분석은_DONE으로_끝난다() {
+        seedReadyDocument();
+        aiClient.onExtract(req -> {
+            if (req.checkItems().size() > 1) {
+                // 평소의 묶음 요청은 항상 실패한다(예: 503).
+                throw new RuntimeException("묶음 추출 실패");
+            }
+            if (req.checkItems().contains(3)) {
+                // 점검 항목별 재시도에서도 3번만 계속 실패한다.
+                throw new RuntimeException("3번 항목 배치만 실패");
+            }
+            if (req.checkItems().contains(1)) {
+                return new ExtractResponse(List.of(
+                        new ExtractionDto(1, "main-art1", "보험계약의 내용을 규정합니다.")));
+            }
+            return new ExtractResponse(List.of());
+        });
+        aiClient.onExplain(req -> new ExplainResponse(req.items().stream()
+                .map(item -> new CardDto(item.itemId(), "제목", "해설: " + item.quote(), "pass", null))
+                .toList()));
+
+        AnalysisRecord queued = service.start(new StartRequest("doc-1", List.of(), false));
+        AnalysisRecord finalRecord = analysisStore.get(queued.analysisId());
+
+        // 3번 항목의 배치만 실패했을 뿐, 분석 전체는 FAILED가 아니라 DONE으로 끝난다.
+        assertThat(finalRecord.status()).isEqualTo(AnalysisStatus.DONE);
+        assertThat(finalRecord.cards()).hasSize(1);
+        assertThat(finalRecord.cards().get(0).checkItem()).isEqualTo(1);
+
+        var result = com.insurance.explainer.analysis.dto.ResultResponseBuilder.build(finalRecord);
+        assertThat(result.checkSummary()).filteredOn(c -> c.checkItem() == 1)
+                .extracting(c -> c.status()).containsExactly("FOUND");
+        // F-17: 실패한 3번 항목은 추출 결과가 없으니 "찾지 못함"으로 자연스럽게 남는다.
+        assertThat(result.checkSummary()).filteredOn(c -> c.checkItem() == 3)
+                .extracting(c -> c.status()).containsExactly("NOT_FOUND");
+    }
+
+    @Test
+    void 추출_배치가_전부_실패하면_여전히_FAILED_ANALYSIS_FAILED로_끝난다() {
+        seedReadyDocument();
+        aiClient.onExtract(req -> {
+            throw new RuntimeException("묶음도 점검 항목별 재시도도 전부 실패");
+        });
+
+        AnalysisRecord queued = service.start(new StartRequest("doc-1", List.of(), false));
+        AnalysisRecord finalRecord = analysisStore.get(queued.analysisId());
+
+        assertThat(finalRecord.status()).isEqualTo(AnalysisStatus.FAILED);
+        assertThat(finalRecord.errorCode()).isEqualTo("ANALYSIS_FAILED");
+    }
+
+    @Test
+    void 해설_배치_하나만_실패해도_그_항목만_검토_실패로_표시되고_나머지는_정상_해설이_나온다() {
+        seedReadyDocument();
+        aiClient.onExtract(req -> new ExtractResponse(List.of(
+                new ExtractionDto(1, "main-art1", "보험계약의 내용을 규정합니다."),
+                new ExtractionDto(2, "rider01-art5-p1", "90일이 지난날의 다음날로 합니다.")
+        )));
+        aiClient.onExplain(req -> {
+            if (req.items().size() > 1) {
+                // 평소의 묶음 요청은 항상 실패한다.
+                throw new RuntimeException("묶음 해설 실패");
+            }
+            if (req.items().get(0).checkItem() == 2) {
+                // 점검 항목별 재시도에서도 2번만 계속 실패한다.
+                throw new RuntimeException("2번 항목 배치만 실패");
+            }
+            return new ExplainResponse(req.items().stream()
+                    .map(item -> new CardDto(item.itemId(), "제목", "해설: " + item.quote(), "pass", null))
+                    .toList());
+        });
+
+        AnalysisRecord queued = service.start(new StartRequest("doc-1", List.of("rider01"), false));
+        AnalysisRecord finalRecord = analysisStore.get(queued.analysisId());
+
+        assertThat(finalRecord.status()).isEqualTo(AnalysisStatus.DONE);
+        assertThat(finalRecord.cards()).hasSize(2);
+
+        CardResult fullCard = finalRecord.cards().stream()
+                .filter(c -> c.checkItem() == 1).findFirst().orElseThrow();
+        assertThat(fullCard.display()).isEqualTo("FULL");
+        assertThat(fullCard.title()).isEqualTo("제목");
+
+        // 2번 항목은 해설 배치가 끝까지 실패해 F-12처럼 QUOTE_ONLY(원문만)로 남지만,
+        // 결과에서 통째로 사라지지는 않는다.
+        CardResult quoteOnlyCard = finalRecord.cards().stream()
+                .filter(c -> c.checkItem() == 2).findFirst().orElseThrow();
+        assertThat(quoteOnlyCard.display()).isEqualTo("QUOTE_ONLY");
+        assertThat(quoteOnlyCard.title()).isNull();
+        assertThat(quoteOnlyCard.explanation()).isNull();
+        assertThat(quoteOnlyCard.quote()).isNotBlank();
+    }
+
     // ---- F-10 인용 대조 ----
 
     @Test

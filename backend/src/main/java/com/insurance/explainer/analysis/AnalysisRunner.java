@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 /**
  * 분석 단계(EXTRACTING → CHECKING_QUOTES → EXPLAINING → FINALIZING)를 실제로
@@ -112,12 +113,40 @@ public class AnalysisRunner {
         }
     }
 
+    /**
+     * 평소에는 점검 항목 6개를 한 번에 묶어 요청한다. AI 서버 내부에서 조항을
+     * 여러 배치로 나눠 Gemini를 부르는데(명세서 5장), 그중 한 배치만 503 등으로
+     * 실패해도 지금까지는 /ai/extract 전체가 오류를 돌려줘 분석이 통째로
+     * ANALYSIS_FAILED로 끝났다. 이를 막기 위해, 묶음 요청이 실패하면 점검 항목별로
+     * 나눠 다시 시도한다. 그래도 실패하는 점검 항목은 추출 결과가 없으므로 F-17
+     * "찾지 못함"으로 자연스럽게 남고, 성공한 점검 항목의 결과는 그대로 쓴다.
+     * 전부 실패했을 때만 기존처럼 분석을 FAILED로 끝낸다.
+     */
     private List<ExtractionDto> extract(AnalysisRecord record) {
         List<ClauseDto> clauseDtos = record.clauses().stream().map(this::toClauseDto).toList();
-        List<Integer> checkItems = CheckItem.ALL.stream().map(CheckItem::id).toList();
-        ExtractRequest request = new ExtractRequest(record.analysisId(), checkItems, clauseDtos);
-        ExtractResponse response = aiClient.extract(request);
-        return response.extractions();
+        List<Integer> allCheckItemIds = CheckItem.ALL.stream().map(CheckItem::id).toList();
+        ExtractRequest wholeRequest = new ExtractRequest(record.analysisId(), allCheckItemIds, clauseDtos);
+        try {
+            return aiClient.extract(wholeRequest).extractions();
+        } catch (RuntimeException wholeFailure) {
+            List<ExtractionDto> partial = new ArrayList<>();
+            int successCount = 0;
+            for (CheckItem checkItem : CheckItem.ALL) {
+                ExtractRequest singleRequest =
+                        new ExtractRequest(record.analysisId(), List.of(checkItem.id()), clauseDtos);
+                try {
+                    partial.addAll(aiClient.extract(singleRequest).extractions());
+                    successCount++;
+                } catch (RuntimeException singleFailure) {
+                    // 이 점검 항목은 재시도로도 못 뽑았다. extractions에 아무것도
+                    // 안 들어가 결과에서 F-17 "찾지 못함"으로 표시된다.
+                }
+            }
+            if (successCount == 0) {
+                throw wholeFailure;
+            }
+            return partial;
+        }
     }
 
     private List<ExplainItemDto> buildExplainItems(List<ExtractionDto> validated,
@@ -135,13 +164,39 @@ public class AnalysisRunner {
         return items;
     }
 
+    // AI 설명 요청 배치가 실패했을 때, 원문(quote)만 보여주고 제목·해설은 비우는
+    // 이유(F-12 "검토 실패"와 같은 QUOTE_ONLY 표시를 그대로 재사용한다).
+    private static final String EXPLAIN_BATCH_FAILED_REASON = "AI 설명 요청이 실패해 원문만 보여줍니다.";
+
+    /**
+     * 평소에는 해설이 필요한 항목을 전부 한 번에 묶어 요청한다. 이 묶음 요청이
+     * 실패하면(extract와 같은 이유) 점검 항목별로 나눠 다시 시도한다. 그래도
+     * 실패하는 점검 항목은 review를 "fail"로 둬서, finalize에서 기존 F-12
+     * 로직대로 QUOTE_ONLY(원문만 표시)로 처리되게 한다. 성공한 점검 항목은 AI가
+     * 돌려준 제목·해설을 그대로 쓴다.
+     */
     private List<CardDto> explain(AnalysisRecord record, List<ExplainItemDto> items) {
         if (items.isEmpty()) {
             return List.of();
         }
-        ExplainRequest request = new ExplainRequest(record.analysisId(), items);
-        ExplainResponse response = aiClient.explain(request);
-        return response.cards();
+        ExplainRequest wholeRequest = new ExplainRequest(record.analysisId(), items);
+        try {
+            return aiClient.explain(wholeRequest).cards();
+        } catch (RuntimeException wholeFailure) {
+            Map<Integer, List<ExplainItemDto>> itemsByCheckItem = items.stream()
+                    .collect(Collectors.groupingBy(ExplainItemDto::checkItem, LinkedHashMap::new, Collectors.toList()));
+            List<CardDto> partial = new ArrayList<>();
+            for (List<ExplainItemDto> group : itemsByCheckItem.values()) {
+                try {
+                    partial.addAll(aiClient.explain(new ExplainRequest(record.analysisId(), group)).cards());
+                } catch (RuntimeException groupFailure) {
+                    for (ExplainItemDto item : group) {
+                        partial.add(new CardDto(item.itemId(), null, null, "fail", EXPLAIN_BATCH_FAILED_REASON));
+                    }
+                }
+            }
+            return partial;
+        }
     }
 
     /**
