@@ -10,6 +10,8 @@ services:
 
   backend:
     build: ./backend
+    volumes:
+      - analysis-state:/app/.local-state
     ports:
       - "8080:8080"
     environment:
@@ -33,3 +35,6 @@ services:
       - PROXY_TARGET=http://backend:8080
     depends_on:
       - backend
+
+volumes:
+  analysis-state:

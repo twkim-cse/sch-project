@@ -8,55 +8,78 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.time.Duration;
-import java.util.function.Supplier;
 
-/**
- * 명세서 5장 "호출 규칙": 대기 시간은 넉넉히, 오류나 시간 초과가 나면 한 번
- * 다시 시도하고, 다시 실패하면 분석을 FAILED(ANALYSIS_FAILED)로 끝낸다.
- * <p>
- * 대기 시간은 고정 5분이 아니라 요청 크기(배치 수)에 비례해서 늘어난다. AI
- * 서버는 조항을 배치로 나눠 순서대로 Gemini를 부르므로(명세서 5장), 조항이
- * 많을수록 끝까지 걸리는 시간도 길어진다. 배치 하나당 1분을 더하고, 작은
- * 요청에서는 5분보다 줄지 않도록 바닥을 둔다(기존 동작 유지). 너무 커지는
- * 것을 막기 위한 안전장치로 위쪽 한도도 둔다.
- */
+/** AI HTTP boundary: lossless extraction coordinator and bounded explain requests.
+ * Gemini stage retries are owned by FastAPI; no whole-request HTTP retry here. */
 @Component
+@org.springframework.context.annotation.DependsOn("localStateLease")
 public class AiClient {
 
     private static final Duration MIN_TIMEOUT = Duration.ofMinutes(5);
     private static final Duration PER_BATCH_TIMEOUT = Duration.ofMinutes(1);
     private static final Duration MAX_TIMEOUT = Duration.ofMinutes(60);
 
-    // AI 서버의 extract_planning.py MAX_BATCH_CLAUSES와 맞춘다. extract 요청의
-    // 조항 수를 이 값으로 나누면 AI 서버가 실제로 처리할 배치 수에 가까워진다.
-    private static final int CLAUSES_PER_BATCH = 25;
-
     private final WebClient aiWebClient;
+    private final BulkExtractCoordinator bulk;
+    private final DurableExplainCalls explanations;
+    private final boolean durable;
 
     public AiClient(WebClient aiWebClient) {
+        this(aiWebClient, aiWebClient == null ? null : new BulkExtractCoordinator(aiWebClient));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AiClient(WebClient aiWebClient,@org.springframework.beans.factory.annotation.Value("${ai.checkpoint-dir:}") String directory) {
+        this(aiWebClient,new BulkExtractCoordinator(aiWebClient,Duration.ofSeconds(12),
+                com.insurance.explainer.persistence.LocalStateFiles.optional(directory,"extract")),
+                new DurableExplainCalls(aiWebClient,com.insurance.explainer.persistence.LocalStateFiles.optional(directory,"explain")),
+                directory!=null && !directory.isBlank());
+    }
+
+    AiClient(WebClient aiWebClient, BulkExtractCoordinator coordinator) {
+        this(aiWebClient,coordinator,new DurableExplainCalls(aiWebClient,null),false);
+    }
+    AiClient(WebClient aiWebClient,BulkExtractCoordinator coordinator,DurableExplainCalls explanations,boolean durable) {
         this.aiWebClient = aiWebClient;
+        this.bulk = coordinator;
+        this.explanations=explanations;this.durable=durable;
     }
 
     public ExtractResponse extract(ExtractRequest request) {
-        Duration timeout = batchTimeout(ceilDiv(request.clauses().size(), CLAUSES_PER_BATCH));
-        return callWithRetry("/ai/extract", () -> aiWebClient.post()
-                .uri("/ai/extract")
-                .bodyValue(request)
-                .retrieve()
-                .bodyToMono(ExtractResponse.class)
-                .block(timeout));
+        return bulk.extract(request);
+    }
+
+    public BulkExtractCoordinator.Progress extractProgress(String analysisId) {
+        return bulk == null ? null : bulk.progress(analysisId);
+    }
+
+    public boolean canResumeExtract(String analysisId) {
+        if(bulk==null)return false;
+        var progress=bulk.progress(analysisId);
+        return bulk.canResume(analysisId) || (progress!=null && progress.fullDocumentSuccess() && explanations.canResume(analysisId));
+    }
+    public boolean durableEnabled(){return durable;}
+
+    public void forgetExtract(String analysisId) {
+        if (bulk != null) bulk.forget(analysisId);
+        explanations.forget(analysisId);
     }
 
     public ExplainResponse explain(ExplainRequest request) {
         // AI 서버는 explain 항목을 하나씩 순서대로 처리하므로(초안·검토를 각각
         // 호출), 항목 수 자체가 배치 수와 같다.
         Duration timeout = batchTimeout(request.items().size());
-        return callWithRetry("/ai/explain", () -> aiWebClient.post()
+        try {
+            return explanations.call(request,()->aiWebClient.post()
                 .uri("/ai/explain")
                 .bodyValue(request)
                 .retrieve()
                 .bodyToMono(ExplainResponse.class)
                 .block(timeout));
+        } catch (RuntimeException e) {
+            // Gemini retries are owned by the AI stage budget, not this HTTP client.
+            throw new AiCallFailedException("AI explain 요청에 실패했습니다.", e);
+        }
     }
 
     static Duration batchTimeout(int batchCount) {
@@ -65,19 +88,4 @@ public class AiClient {
         return withFloor.compareTo(MAX_TIMEOUT) > 0 ? MAX_TIMEOUT : withFloor;
     }
 
-    private static int ceilDiv(int total, int perBatch) {
-        return (total + perBatch - 1) / perBatch;
-    }
-
-    private <T> T callWithRetry(String uri, Supplier<T> call) {
-        try {
-            return call.get();
-        } catch (RuntimeException firstFailure) {
-            try {
-                return call.get();
-            } catch (RuntimeException secondFailure) {
-                throw new AiCallFailedException(uri + " 호출이 재시도 후에도 실패했습니다.", secondFailure);
-            }
-        }
-    }
 }

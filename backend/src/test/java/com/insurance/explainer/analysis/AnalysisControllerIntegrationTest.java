@@ -35,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 분석 흐름 자체(QUEUED→RUNNING 단계별→DONE, 결과 조회, AI 실패 시 FAILED)에 집중한다.
  */
 @SpringBootTest(classes = Application.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@org.springframework.test.annotation.DirtiesContext(classMode = org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD)
 @TestPropertySource(properties = {
         "app.mock-documents=true",
         "app.mock-documents-delay-ms=0",
@@ -57,10 +58,21 @@ class AnalysisControllerIntegrationTest {
         int aiPort = freePort();
         aiServer = HttpServer.create(new InetSocketAddress("127.0.0.1", aiPort), 0);
         aiServer.setExecutor(Executors.newCachedThreadPool());
-        aiServer.createContext("/ai/extract", exchange -> respond(exchange, """
+        aiServer.createContext("/ai/extract", exchange -> {
+            var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            var request = mapper.readTree(exchange.getRequestBody());
+            if (exchange.getRequestURI().getPath().endsWith("/plan")) {
+                var plan = mapper.createObjectNode();
+                plan.put("plan_id", "synthetic-plan");plan.put("preservation_verified", true);
+                var part = plan.putArray("parts").addObject();
+                part.put("part_id", "part-0");part.put("input_bytes", 10_000);part.set("request", request);
+                respond(exchange, mapper.writeValueAsString(plan));return;
+            }
+            respond(exchange, """
                 {"extractions":[{"check_item":2,"clause_id":"rider01-art5-p2",
                 "quote":"암보장개시일은 계약일부터 그 날을 포함하여 90일이 지난날의 다음날로 합니다."}]}
-                """));
+                """);
+        });
         aiServer.createContext("/ai/explain", exchange -> respond(exchange, """
                 {"cards":[{"item_id":"c-001","title":"제목입니다","explanation":"해설입니다",
                 "review":"pass","review_reason":null}]}

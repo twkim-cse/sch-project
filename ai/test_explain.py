@@ -17,6 +17,10 @@ class ExplainTests(unittest.TestCase):
     def setUp(self):
         with patch("dotenv.load_dotenv"), patch.dict(os.environ, {"GEMINI_API_KEY": "", "GEMINI_MODEL": "test-model"}):
             self.ns = runpy.run_path(str(Path(__file__).with_name("app.py")))
+        # Extract backoff jitter is deterministic in offline fixtures only.
+        jitter_patch = patch("extract_resilience.random.uniform", return_value=0)
+        jitter_patch.start()
+        self.addCleanup(jitter_patch.stop)
         self.mock = MagicMock()
         self.ns["explain_document"].__globals__["client"] = self.mock
         self.mock.models.list.return_value = [SimpleNamespace(name="models/test-model", supported_actions=["generateContent"])]

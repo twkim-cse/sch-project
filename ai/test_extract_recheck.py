@@ -67,10 +67,10 @@ class RecheckTests(unittest.TestCase):
     def test_final_failure_discards_first_pass_success(self):
         self.body['check_items'] = [1, 3]
         error = errors.ServerError(503, {'error': {'message': 'PRIVATE'}})
-        self.mock.side_effect = [self.response([dict(self.row, check_item=1)]), error, error]
+        self.mock.side_effect = [self.response([dict(self.row, check_item=1)]), error, error, error]
         self.assertEqual(self.post().status_code, 502)
-        self.assertEqual(self.mock.call_count, 3)
-        self.h.sleep.assert_called_once_with(2)
+        self.assertEqual(self.mock.call_count, 4)
+        self.assertEqual([c.args[0] for c in self.h.sleep.call_args_list], [2,4])
 
     def test_503_retries_only_recheck(self):
         self.mock.side_effect = [self.response(), errors.ServerError(503, {'error': {}}), self.response([self.row])]

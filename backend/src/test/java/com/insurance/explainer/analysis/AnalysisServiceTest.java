@@ -39,6 +39,23 @@ class AnalysisServiceTest {
             false, 0, 0);
     private final AnalysisService service = new AnalysisService(documentStore, analysisStore, analysisRunner);
 
+    @Test void many_explanations_use_two_item_chunks_without_whole_request_retry() {
+        seedReadyDocument();
+        aiClient.onExtract(req -> new ExtractResponse(List.of(
+                new ExtractionDto(1,"main-art1","보험계약의 내용을 규정합니다."),
+                new ExtractionDto(2,"main-art1","보험계약의 내용을 규정합니다."),
+                new ExtractionDto(3,"main-art1","보험계약의 내용을 규정합니다."))));
+        AtomicInteger calls=new AtomicInteger();
+        aiClient.onExplain(req -> {
+            assertThat(req.items().size()).isLessThanOrEqualTo(2);calls.incrementAndGet();
+            return new ExplainResponse(req.items().stream().map(item ->
+                    new CardDto(item.itemId(),"중립적 설명",item.quote(),"pass",null)).toList());
+        });
+        var queued=service.start(new StartRequest("doc-1",List.of(),false));
+        assertThat(analysisStore.get(queued.analysisId()).status()).isEqualTo(AnalysisStatus.DONE);
+        assertThat(calls.get()).isEqualTo(2);
+    }
+
     @Test
     void 없는_문서면_NOT_FOUND() {
         StartRequest request = new StartRequest("no-such-doc", List.of(), false);
@@ -175,7 +192,7 @@ class AnalysisServiceTest {
     // ---- 추출/해설 배치 하나만 실패해도 분석 전체가 FAILED로 끝나지 않아야 한다 ----
 
     @Test
-    void 추출_배치_하나만_실패해도_나머지_점검항목은_결과에_포함되고_분석은_DONE으로_끝난다() {
+    void 추출_실패는_전체_조항을_번호별로_재전송하거나_NOT_FOUND로_바꾸지_않는다() {
         seedReadyDocument();
         aiClient.onExtract(req -> {
             if (req.checkItems().size() > 1) {
@@ -199,17 +216,9 @@ class AnalysisServiceTest {
         AnalysisRecord queued = service.start(new StartRequest("doc-1", List.of(), false));
         AnalysisRecord finalRecord = analysisStore.get(queued.analysisId());
 
-        // 3번 항목의 배치만 실패했을 뿐, 분석 전체는 FAILED가 아니라 DONE으로 끝난다.
-        assertThat(finalRecord.status()).isEqualTo(AnalysisStatus.DONE);
-        assertThat(finalRecord.cards()).hasSize(1);
-        assertThat(finalRecord.cards().get(0).checkItem()).isEqualTo(1);
-
-        var result = com.insurance.explainer.analysis.dto.ResultResponseBuilder.build(finalRecord);
-        assertThat(result.checkSummary()).filteredOn(c -> c.checkItem() == 1)
-                .extracting(c -> c.status()).containsExactly("FOUND");
-        // F-17: 실패한 3번 항목은 추출 결과가 없으니 "찾지 못함"으로 자연스럽게 남는다.
-        assertThat(result.checkSummary()).filteredOn(c -> c.checkItem() == 3)
-                .extracting(c -> c.status()).containsExactly("NOT_FOUND");
+        // New contract: incomplete extraction cannot become DONE/NOT_FOUND.
+        assertThat(finalRecord.status()).isEqualTo(AnalysisStatus.FAILED);
+        assertThat(finalRecord.cards()).isEmpty();
     }
 
     @Test
@@ -227,7 +236,7 @@ class AnalysisServiceTest {
     }
 
     @Test
-    void 해설_배치_하나만_실패해도_그_항목만_검토_실패로_표시되고_나머지는_정상_해설이_나온다() {
+    void 해설_HTTP_실패를_의미검토_fail로_위장하거나_DONE으로_표시하지_않는다() {
         seedReadyDocument();
         aiClient.onExtract(req -> new ExtractResponse(List.of(
                 new ExtractionDto(1, "main-art1", "보험계약의 내용을 규정합니다."),
@@ -250,22 +259,8 @@ class AnalysisServiceTest {
         AnalysisRecord queued = service.start(new StartRequest("doc-1", List.of("rider01"), false));
         AnalysisRecord finalRecord = analysisStore.get(queued.analysisId());
 
-        assertThat(finalRecord.status()).isEqualTo(AnalysisStatus.DONE);
-        assertThat(finalRecord.cards()).hasSize(2);
-
-        CardResult fullCard = finalRecord.cards().stream()
-                .filter(c -> c.checkItem() == 1).findFirst().orElseThrow();
-        assertThat(fullCard.display()).isEqualTo("FULL");
-        assertThat(fullCard.title()).isEqualTo("제목");
-
-        // 2번 항목은 해설 배치가 끝까지 실패해 F-12처럼 QUOTE_ONLY(원문만)로 남지만,
-        // 결과에서 통째로 사라지지는 않는다.
-        CardResult quoteOnlyCard = finalRecord.cards().stream()
-                .filter(c -> c.checkItem() == 2).findFirst().orElseThrow();
-        assertThat(quoteOnlyCard.display()).isEqualTo("QUOTE_ONLY");
-        assertThat(quoteOnlyCard.title()).isNull();
-        assertThat(quoteOnlyCard.explanation()).isNull();
-        assertThat(quoteOnlyCard.quote()).isNotBlank();
+        assertThat(finalRecord.status()).isEqualTo(AnalysisStatus.FAILED);
+        assertThat(finalRecord.cards()).isEmpty();
     }
 
     // ---- F-10 인용 대조 ----
