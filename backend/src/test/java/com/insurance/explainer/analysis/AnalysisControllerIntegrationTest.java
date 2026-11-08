@@ -1,5 +1,7 @@
 package com.insurance.explainer.analysis;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.insurance.explainer.Application;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
@@ -45,6 +47,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 })
 class AnalysisControllerIntegrationTest {
 
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
     private static HttpServer aiServer;
 
     @LocalServerPort
@@ -61,6 +65,28 @@ class AnalysisControllerIntegrationTest {
                 {"extractions":[{"check_item":2,"clause_id":"rider01-art5-p2",
                 "quote":"암보장개시일은 계약일부터 그 날을 포함하여 90일이 지난날의 다음날로 합니다."}]}
                 """));
+        // candidates/plan·merge는 실제 계산 없이 "조각 1개 = 원본 요청 그대로"로
+        // 흉내 낸다(identity). AnalysisRunner는 이 계획을 받아 /ai/extract를 부른다.
+        aiServer.createContext("/ai/extract/candidates/plan", exchange -> {
+            JsonNode body = OBJECT_MAPPER.readTree(exchange.getRequestBody());
+            JsonNode sourceRequest = body.get("source_request");
+            respond(exchange, "{\"selection\":{\"selection_id\":\"selection-1\"},"
+                    + "\"candidate_plan\":{\"plan_id\":\"plan-1\",\"parts\":["
+                    + "{\"part_id\":\"part-1\",\"request\":" + sourceRequest.toString() + "}]}}");
+        });
+        aiServer.createContext("/ai/extract/candidates/merge", exchange -> {
+            JsonNode body = OBJECT_MAPPER.readTree(exchange.getRequestBody());
+            StringBuilder extractions = new StringBuilder();
+            for (JsonNode partResult : body.get("part_results")) {
+                for (JsonNode extraction : partResult.get("response").get("extractions")) {
+                    if (extractions.length() > 0) {
+                        extractions.append(',');
+                    }
+                    extractions.append(extraction.toString());
+                }
+            }
+            respond(exchange, "{\"extractions\":[" + extractions + "]}");
+        });
         aiServer.createContext("/ai/explain", exchange -> respond(exchange, """
                 {"cards":[{"item_id":"c-001","title":"제목입니다","explanation":"해설입니다",
                 "review":"pass","review_reason":null}]}

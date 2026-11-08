@@ -1,5 +1,9 @@
 package com.insurance.explainer.analysis;
 
+import com.insurance.explainer.analysis.ai.CandidateMergeRequest;
+import com.insurance.explainer.analysis.ai.CandidatePartDto;
+import com.insurance.explainer.analysis.ai.CandidatePlanRequest;
+import com.insurance.explainer.analysis.ai.CandidatePlanResponse;
 import com.insurance.explainer.analysis.ai.CardDto;
 import com.insurance.explainer.analysis.ai.ClauseDto;
 import com.insurance.explainer.analysis.ai.ExplainItemDto;
@@ -8,6 +12,7 @@ import com.insurance.explainer.analysis.ai.ExplainResponse;
 import com.insurance.explainer.analysis.ai.ExtractRequest;
 import com.insurance.explainer.analysis.ai.ExtractResponse;
 import com.insurance.explainer.analysis.ai.ExtractionDto;
+import com.insurance.explainer.analysis.ai.PartResultDto;
 import com.insurance.explainer.analysis.ai.RetryHint;
 import com.insurance.explainer.structure.Clause;
 import org.springframework.beans.factory.annotation.Value;
@@ -113,40 +118,55 @@ public class AnalysisRunner {
         }
     }
 
+    // 후보 필터링을 쓰지 않고 전체 조항을 대상으로 한다("mode":"recall"은 AI
+    // 서버가 항목별 근거가 없으면 자동으로 넓게 재검색하므로, 명시적인
+    // broad/full 승격은 지금은 두지 않는다. 명세서 5장/candidates 연동 문서 참고).
+    private static final String CANDIDATE_MODE = "recall";
+
     /**
-     * 평소에는 점검 항목 6개를 한 번에 묶어 요청한다. AI 서버 내부에서 조항을
-     * 여러 배치로 나눠 Gemini를 부르는데(명세서 5장), 그중 한 배치만 503 등으로
-     * 실패해도 지금까지는 /ai/extract 전체가 오류를 돌려줘 분석이 통째로
-     * ANALYSIS_FAILED로 끝났다. 이를 막기 위해, 묶음 요청이 실패하면 점검 항목별로
-     * 나눠 다시 시도한다. 그래도 실패하는 점검 항목은 추출 결과가 없으므로 F-17
-     * "찾지 못함"으로 자연스럽게 남고, 성공한 점검 항목의 결과는 그대로 쓴다.
-     * 전부 실패했을 때만 기존처럼 분석을 FAILED로 끝낸다.
+     * 조항이 많은 약관은 기존 /ai/extract 한 번으로 보내면 배치/예산 초과(413)가
+     * 난다. 그래서 AI 서버의 무손실 분할 계획(candidates/plan)을 먼저 받아
+     * 조각(part)별로 나눠 순서대로 /ai/extract를 부르고, 끝나면 candidates/merge로
+     * 원래 조항 기준 결과를 되돌려 받는다(명세서 5장, candidates 연동 문서).
+     * <p>
+     * 조각 하나가 (AiClient의 재시도까지) 실패해도 그 조각은 빈 추출 결과로
+     * 채워 병합을 계속 진행한다 — merge는 모든 조각이 있어야 하므로, 빈 결과를
+     * 넣어 두면 그 조각의 조항만 추출 결과가 없어 F-17 "찾지 못함"으로 자연스럽게
+     * 남고, 다른 조각에서 성공한 결과는 그대로 쓴다. 조각이 하나도 성공하지
+     * 못했을 때만(계획 자체가 조각 하나뿐인 평소 상황을 포함) 기존처럼 분석을
+     * FAILED로 끝낸다.
      */
     private List<ExtractionDto> extract(AnalysisRecord record) {
         List<ClauseDto> clauseDtos = record.clauses().stream().map(this::toClauseDto).toList();
         List<Integer> allCheckItemIds = CheckItem.ALL.stream().map(CheckItem::id).toList();
-        ExtractRequest wholeRequest = new ExtractRequest(record.analysisId(), allCheckItemIds, clauseDtos);
-        try {
-            return aiClient.extract(wholeRequest).extractions();
-        } catch (RuntimeException wholeFailure) {
-            List<ExtractionDto> partial = new ArrayList<>();
-            int successCount = 0;
-            for (CheckItem checkItem : CheckItem.ALL) {
-                ExtractRequest singleRequest =
-                        new ExtractRequest(record.analysisId(), List.of(checkItem.id()), clauseDtos);
-                try {
-                    partial.addAll(aiClient.extract(singleRequest).extractions());
-                    successCount++;
-                } catch (RuntimeException singleFailure) {
-                    // 이 점검 항목은 재시도로도 못 뽑았다. extractions에 아무것도
-                    // 안 들어가 결과에서 F-17 "찾지 못함"으로 표시된다.
-                }
+        ExtractRequest sourceRequest = new ExtractRequest(record.analysisId(), allCheckItemIds, clauseDtos);
+
+        CandidatePlanResponse plan = aiClient.candidatesPlan(
+                new CandidatePlanRequest(sourceRequest, CANDIDATE_MODE, null));
+        List<CandidatePartDto> parts = plan.candidatePlan().parts();
+
+        Map<String, ExtractResponse> responseByPartId = new LinkedHashMap<>();
+        RuntimeException lastFailure = null;
+        int successCount = 0;
+        for (CandidatePartDto part : parts) {
+            try {
+                responseByPartId.put(part.partId(), aiClient.extract(part.request()));
+                successCount++;
+            } catch (RuntimeException partFailure) {
+                lastFailure = partFailure;
+                responseByPartId.put(part.partId(), new ExtractResponse(List.of()));
             }
-            if (successCount == 0) {
-                throw wholeFailure;
-            }
-            return partial;
         }
+        if (successCount == 0 && !parts.isEmpty()) {
+            throw lastFailure;
+        }
+
+        List<PartResultDto> partResults = parts.stream()
+                .map(part -> new PartResultDto(part.partId(), responseByPartId.get(part.partId())))
+                .toList();
+        CandidateMergeRequest mergeRequest = new CandidateMergeRequest(sourceRequest, CANDIDATE_MODE, null,
+                plan.selection().selectionId(), plan.candidatePlan().planId(), partResults);
+        return aiClient.candidatesMerge(mergeRequest).extractions();
     }
 
     private List<ExplainItemDto> buildExplainItems(List<ExtractionDto> validated,

@@ -1,9 +1,14 @@
 package com.insurance.explainer.analysis;
 
+import com.insurance.explainer.analysis.ai.CandidatePartDto;
+import com.insurance.explainer.analysis.ai.CandidatePlanDto;
+import com.insurance.explainer.analysis.ai.CandidatePlanResponse;
 import com.insurance.explainer.analysis.ai.CardDto;
 import com.insurance.explainer.analysis.ai.ExplainResponse;
+import com.insurance.explainer.analysis.ai.ExtractRequest;
 import com.insurance.explainer.analysis.ai.ExtractResponse;
 import com.insurance.explainer.analysis.ai.ExtractionDto;
+import com.insurance.explainer.analysis.ai.SelectionDto;
 import com.insurance.explainer.analysis.dto.StartRequest;
 import com.insurance.explainer.document.DocumentRecord;
 import com.insurance.explainer.document.DocumentStore;
@@ -172,34 +177,72 @@ class AnalysisServiceTest {
         assertThat(finalRecord.errorCode()).isEqualTo("ANALYSIS_FAILED");
     }
 
-    // ---- 추출/해설 배치 하나만 실패해도 분석 전체가 FAILED로 끝나지 않아야 한다 ----
+    // ---- candidates/plan·merge 기반 추출: 조각 하나만 실패해도 분석 전체가 FAILED로 끝나지 않아야 한다 ----
 
     @Test
-    void 추출_배치_하나만_실패해도_나머지_점검항목은_결과에_포함되고_분석은_DONE으로_끝난다() {
+    void 추출_계획이_여러_조각이면_순서대로_호출되고_결과가_합쳐진다() {
         seedReadyDocument();
+        List<String> calledPartIds = new java.util.concurrent.CopyOnWriteArrayList<>();
+        aiClient.onCandidatesPlan(req -> new CandidatePlanResponse(
+                new SelectionDto("selection-1"),
+                new CandidatePlanDto("plan-1", List.of(
+                        new CandidatePartDto("part-1", new ExtractRequest(
+                                req.sourceRequest().analysisId(), req.sourceRequest().checkItems(),
+                                List.of(req.sourceRequest().clauses().get(0)))),
+                        new CandidatePartDto("part-2", new ExtractRequest(
+                                req.sourceRequest().analysisId(), req.sourceRequest().checkItems(),
+                                req.sourceRequest().clauses().subList(1, req.sourceRequest().clauses().size())))
+                ))));
         aiClient.onExtract(req -> {
-            if (req.checkItems().size() > 1) {
-                // 평소의 묶음 요청은 항상 실패한다(예: 503).
-                throw new RuntimeException("묶음 추출 실패");
-            }
-            if (req.checkItems().contains(3)) {
-                // 점검 항목별 재시도에서도 3번만 계속 실패한다.
-                throw new RuntimeException("3번 항목 배치만 실패");
-            }
-            if (req.checkItems().contains(1)) {
+            calledPartIds.add(req.clauses().get(0).clauseId());
+            if (req.clauses().get(0).clauseId().equals("main-art1")) {
                 return new ExtractResponse(List.of(
                         new ExtractionDto(1, "main-art1", "보험계약의 내용을 규정합니다.")));
             }
-            return new ExtractResponse(List.of());
+            return new ExtractResponse(List.of(
+                    new ExtractionDto(2, "rider01-art5-p1", "90일이 지난날의 다음날로 합니다.")));
         });
         aiClient.onExplain(req -> new ExplainResponse(req.items().stream()
                 .map(item -> new CardDto(item.itemId(), "제목", "해설: " + item.quote(), "pass", null))
                 .toList()));
 
-        AnalysisRecord queued = service.start(new StartRequest("doc-1", List.of(), false));
+        AnalysisRecord queued = service.start(new StartRequest("doc-1", List.of("rider01"), false));
         AnalysisRecord finalRecord = analysisStore.get(queued.analysisId());
 
-        // 3번 항목의 배치만 실패했을 뿐, 분석 전체는 FAILED가 아니라 DONE으로 끝난다.
+        assertThat(calledPartIds).containsExactly("main-art1", "rider01-art5-p1"); // 조각 순서대로 호출됐다.
+        assertThat(finalRecord.status()).isEqualTo(AnalysisStatus.DONE);
+        assertThat(finalRecord.cards()).hasSize(2); // 두 조각의 추출 결과가 합쳐졌다.
+    }
+
+    @Test
+    void 추출_조각_하나만_실패해도_나머지_조각_결과는_포함되고_분석은_DONE으로_끝난다() {
+        seedReadyDocument();
+        aiClient.onCandidatesPlan(req -> new CandidatePlanResponse(
+                new SelectionDto("selection-1"),
+                new CandidatePlanDto("plan-1", List.of(
+                        new CandidatePartDto("part-main", new ExtractRequest(
+                                req.sourceRequest().analysisId(), req.sourceRequest().checkItems(),
+                                List.of(req.sourceRequest().clauses().get(0)))),
+                        new CandidatePartDto("part-rider", new ExtractRequest(
+                                req.sourceRequest().analysisId(), req.sourceRequest().checkItems(),
+                                req.sourceRequest().clauses().subList(1, req.sourceRequest().clauses().size())))
+                ))));
+        aiClient.onExtract(req -> {
+            if (req.clauses().get(0).clauseId().equals("rider01-art5-p1")) {
+                // 두 번째 조각(rider 조항)은 끝까지 실패한다.
+                throw new RuntimeException("조각 호출 실패");
+            }
+            return new ExtractResponse(List.of(
+                    new ExtractionDto(1, "main-art1", "보험계약의 내용을 규정합니다.")));
+        });
+        aiClient.onExplain(req -> new ExplainResponse(req.items().stream()
+                .map(item -> new CardDto(item.itemId(), "제목", "해설: " + item.quote(), "pass", null))
+                .toList()));
+
+        AnalysisRecord queued = service.start(new StartRequest("doc-1", List.of("rider01"), false));
+        AnalysisRecord finalRecord = analysisStore.get(queued.analysisId());
+
+        // rider 조항이 속한 조각만 실패했을 뿐, 분석 전체는 FAILED가 아니라 DONE으로 끝난다.
         assertThat(finalRecord.status()).isEqualTo(AnalysisStatus.DONE);
         assertThat(finalRecord.cards()).hasSize(1);
         assertThat(finalRecord.cards().get(0).checkItem()).isEqualTo(1);
@@ -207,16 +250,16 @@ class AnalysisServiceTest {
         var result = com.insurance.explainer.analysis.dto.ResultResponseBuilder.build(finalRecord);
         assertThat(result.checkSummary()).filteredOn(c -> c.checkItem() == 1)
                 .extracting(c -> c.status()).containsExactly("FOUND");
-        // F-17: 실패한 3번 항목은 추출 결과가 없으니 "찾지 못함"으로 자연스럽게 남는다.
-        assertThat(result.checkSummary()).filteredOn(c -> c.checkItem() == 3)
+        // F-17: 실패한 조각에 속한 2번 항목은 추출 결과가 없으니 "찾지 못함"으로 자연스럽게 남는다.
+        assertThat(result.checkSummary()).filteredOn(c -> c.checkItem() == 2)
                 .extracting(c -> c.status()).containsExactly("NOT_FOUND");
     }
 
     @Test
-    void 추출_배치가_전부_실패하면_여전히_FAILED_ANALYSIS_FAILED로_끝난다() {
+    void 추출_계획_수립_자체가_재시도_후에도_실패하면_여전히_FAILED_ANALYSIS_FAILED로_끝난다() {
         seedReadyDocument();
-        aiClient.onExtract(req -> {
-            throw new RuntimeException("묶음도 점검 항목별 재시도도 전부 실패");
+        aiClient.onCandidatesPlan(req -> {
+            throw new RuntimeException("AI 서버 완전 다운");
         });
 
         AnalysisRecord queued = service.start(new StartRequest("doc-1", List.of(), false));
