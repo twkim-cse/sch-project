@@ -59,6 +59,13 @@ class RealSampleTermsStructureAnalysisTest {
             }
 
             assertThat(result.clauses()).isNotEmpty();
+            // 같은 이름의 특약이 쪽수만 다르게 중복으로 남지 않아야 한다
+            // (mergeDuplicateRiderNames). 조항이 하나도 없는 특약도 없어야
+            // 한다(usedRiders 필터).
+            assertThat(result.riders()).extracting(RiderRange::name).doesNotHaveDuplicates();
+            for (RiderRange rider : result.riders()) {
+                assertThat(result.clauses()).anyMatch(c -> rider.riderId().equals(c.riderId()));
+            }
         }));
     }
 }
