@@ -11,6 +11,9 @@ import java.util.concurrent.ConcurrentHashMap;
 public class AnalysisStore {
 
     private final Map<String, AnalysisRecord> analyses = new ConcurrentHashMap<>();
+    private final Map<String,CandidateCheckpoint> candidates=new ConcurrentHashMap<>();
+    public void candidateCheckpoint(String id,CandidateCheckpoint checkpoint){candidates.put(id,checkpoint);}
+    public CandidateCheckpoint candidateCheckpoint(String id){return candidates.get(id);}
 
     public void save(AnalysisRecord record) {
         analyses.put(record.analysisId(), record);
@@ -22,6 +25,7 @@ public class AnalysisStore {
 
     public void delete(String analysisId) {
         analyses.remove(analysisId);
+        candidates.remove(analysisId);
     }
 
     /** F-21: 문서가 삭제(즉시 또는 보관 기한 만료)될 때 그 문서로 만든 분석도 함께 지우기 위함. */

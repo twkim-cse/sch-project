@@ -177,7 +177,7 @@ class AnalysisServiceTest {
         assertThat(finalRecord.errorCode()).isEqualTo("ANALYSIS_FAILED");
     }
 
-    // ---- candidates/plan·merge 기반 추출: 조각 하나만 실패해도 분석 전체가 FAILED로 끝나지 않아야 한다 ----
+    // Required candidate part failures must remain incomplete.
 
     @Test
     void 추출_계획이_여러_조각이면_순서대로_호출되고_결과가_합쳐진다() {
@@ -215,7 +215,7 @@ class AnalysisServiceTest {
     }
 
     @Test
-    void 추출_조각_하나만_실패해도_나머지_조각_결과는_포함되고_분석은_DONE으로_끝난다() {
+    void failed_required_part_aborts_without_merge_or_false_not_found() {
         seedReadyDocument();
         aiClient.onCandidatesPlan(req -> new CandidatePlanResponse(
                 new SelectionDto("selection-1"),
@@ -241,18 +241,12 @@ class AnalysisServiceTest {
 
         AnalysisRecord queued = service.start(new StartRequest("doc-1", List.of("rider01"), false));
         AnalysisRecord finalRecord = analysisStore.get(queued.analysisId());
-
-        // rider 조항이 속한 조각만 실패했을 뿐, 분석 전체는 FAILED가 아니라 DONE으로 끝난다.
-        assertThat(finalRecord.status()).isEqualTo(AnalysisStatus.DONE);
-        assertThat(finalRecord.cards()).hasSize(1);
-        assertThat(finalRecord.cards().get(0).checkItem()).isEqualTo(1);
-
-        var result = com.insurance.explainer.analysis.dto.ResultResponseBuilder.build(finalRecord);
-        assertThat(result.checkSummary()).filteredOn(c -> c.checkItem() == 1)
-                .extracting(c -> c.status()).containsExactly("FOUND");
-        // F-17: 실패한 조각에 속한 2번 항목은 추출 결과가 없으니 "찾지 못함"으로 자연스럽게 남는다.
-        assertThat(result.checkSummary()).filteredOn(c -> c.checkItem() == 2)
-                .extracting(c -> c.status()).containsExactly("NOT_FOUND");
+        assertThat(finalRecord.status()).isEqualTo(AnalysisStatus.FAILED);
+        assertThat(finalRecord.cards()).isEmpty();
+        CandidateCheckpoint checkpoint=analysisStore.candidateCheckpoint(queued.analysisId());
+        assertThat(checkpoint.state()).isEqualTo("PARTIAL");
+        assertThat(checkpoint.succeeded()).hasSize(1);
+        assertThat(checkpoint.failedPartId()).isEqualTo("part-rider");
     }
 
     @Test

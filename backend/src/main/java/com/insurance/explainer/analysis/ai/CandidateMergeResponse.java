@@ -6,9 +6,10 @@ import com.fasterxml.jackson.databind.annotation.JsonNaming;
 
 import java.util.List;
 
-// POST /ai/extract/candidates/merge 응답. coverage/selection_id/plan_id는
-// 지금은 쓰지 않아 무시한다(나중에 "일부만 검토함" 안내에 쓸 수 있다).
+// Local backend proposal: retain candidate scope and merge identities.
 @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonIgnoreProperties(ignoreUnknown = true)
-public record CandidateMergeResponse(List<ExtractionDto> extractions) {
+public record CandidateMergeResponse(List<ExtractionDto> extractions,
+        com.fasterxml.jackson.databind.JsonNode coverage, String selectionId, String planId) {
+    public CandidateMergeResponse(List<ExtractionDto> extractions){this(extractions,null,null,null);}
 }

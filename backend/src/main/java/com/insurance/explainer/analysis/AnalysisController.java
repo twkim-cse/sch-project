@@ -25,6 +25,14 @@ public class AnalysisController {
         this.analysisStore = analysisStore;
     }
 
+    // Local backend proposal: explicitly expose candidate scope, never private source/quotes.
+    @GetMapping("/{analysisId}/candidate-progress")
+    public java.util.Map<String,Object> candidateProgress(@PathVariable String analysisId){
+        if(analysisStore.get(analysisId)==null)throw ApiException.notFound("분석을 찾을 수 없습니다.");
+        var checkpoint=analysisStore.candidateCheckpoint(analysisId);
+        return checkpoint==null ? java.util.Map.of("state","NOT_STARTED","fullDocumentSuccess",false) : checkpoint.summary();
+    }
+
     // POST /api/analyses - 분석 시작
     @PostMapping
     public ResponseEntity<StartResponse> start(@RequestBody StartRequest request) {

@@ -14,15 +14,8 @@ import org.springframework.web.reactive.function.client.WebClient;
 import java.time.Duration;
 import java.util.function.Supplier;
 
-/**
- * 명세서 5장 "호출 규칙": 대기 시간은 넉넉히, 오류나 시간 초과가 나면 한 번
- * 다시 시도하고, 다시 실패하면 분석을 FAILED(ANALYSIS_FAILED)로 끝낸다.
- * <p>
- * 대기 시간은 고정 5분이 아니라 요청 크기(배치 수)에 비례해서 늘어난다. AI
- * 서버는 조항을 배치로 나눠 순서대로 Gemini를 부르므로(명세서 5장), 조항이
- * 많을수록 끝까지 걸리는 시간도 길어진다. 배치 하나당 1분을 더하고, 작은
- * 요청에서는 5분보다 줄지 않도록 바닥을 둔다(기존 동작 유지). 너무 커지는
- * 것을 막기 위한 안전장치로 위쪽 한도도 둔다.
+/** AI HTTP boundary: bounded response aggregation and no automatic whole-request replay.
+ * Upstream transient retries are owned by FastAPI; backend resume requires review.
  */
 @Component
 public class AiClient {
@@ -38,12 +31,13 @@ public class AiClient {
     private final WebClient aiWebClient;
 
     public AiClient(WebClient aiWebClient) {
-        this.aiWebClient = aiWebClient;
+        this.aiWebClient = aiWebClient == null ? null : aiWebClient.mutate().codecs(c -> c.defaultCodecs()
+                .maxInMemorySize(40 * 1024 * 1024)).build();
     }
 
     public ExtractResponse extract(ExtractRequest request) {
         Duration timeout = batchTimeout(ceilDiv(request.clauses().size(), CLAUSES_PER_BATCH));
-        return callWithRetry("/ai/extract", () -> aiWebClient.post()
+        return callOnce("/ai/extract", () -> aiWebClient.post()
                 .uri("/ai/extract")
                 .bodyValue(request)
                 .retrieve()
@@ -58,7 +52,7 @@ public class AiClient {
      * 쓴다.
      */
     public CandidatePlanResponse candidatesPlan(CandidatePlanRequest request) {
-        return callWithRetry("/ai/extract/candidates/plan", () -> aiWebClient.post()
+        return callOnce("/ai/extract/candidates/plan", () -> aiWebClient.post()
                 .uri("/ai/extract/candidates/plan")
                 .bodyValue(request)
                 .retrieve()
@@ -72,7 +66,7 @@ public class AiClient {
      * 이 호출도 Gemini를 부르지 않는다.
      */
     public CandidateMergeResponse candidatesMerge(CandidateMergeRequest request) {
-        return callWithRetry("/ai/extract/candidates/merge", () -> aiWebClient.post()
+        return callOnce("/ai/extract/candidates/merge", () -> aiWebClient.post()
                 .uri("/ai/extract/candidates/merge")
                 .bodyValue(request)
                 .retrieve()
@@ -84,7 +78,7 @@ public class AiClient {
         // AI 서버는 explain 항목을 하나씩 순서대로 처리하므로(초안·검토를 각각
         // 호출), 항목 수 자체가 배치 수와 같다.
         Duration timeout = batchTimeout(request.items().size());
-        return callWithRetry("/ai/explain", () -> aiWebClient.post()
+        return callOnce("/ai/explain", () -> aiWebClient.post()
                 .uri("/ai/explain")
                 .bodyValue(request)
                 .retrieve()
@@ -102,15 +96,13 @@ public class AiClient {
         return (total + perBatch - 1) / perBatch;
     }
 
-    private <T> T callWithRetry(String uri, Supplier<T> call) {
+    private <T> T callOnce(String uri, Supplier<T> call) {
         try {
             return call.get();
         } catch (RuntimeException firstFailure) {
-            try {
-                return call.get();
-            } catch (RuntimeException secondFailure) {
-                throw new AiCallFailedException(uri + " 호출이 재시도 후에도 실패했습니다.", secondFailure);
-            }
+            // FastAPI owns bounded upstream retries/cooldown. Never immediately
+            // replay a complete HTTP request, including permanent 413/422.
+            throw new AiCallFailedException("AI 요청에 실패했습니다.", firstFailure);
         }
     }
 }

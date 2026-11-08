@@ -1,0 +1,447 @@
+diff --git a/backend/src/main/java/com/insurance/explainer/analysis/AiClient.java b/backend/src/main/java/com/insurance/explainer/analysis/AiClient.java
+index 542f07d..158fd29 100644
+--- a/backend/src/main/java/com/insurance/explainer/analysis/AiClient.java
++++ b/backend/src/main/java/com/insurance/explainer/analysis/AiClient.java
+@@ -14,15 +14,8 @@ import org.springframework.web.reactive.function.client.WebClient;
+ import java.time.Duration;
+ import java.util.function.Supplier;
+ 
+-/**
+- * 명세서 5장 "호출 규칙": 대기 시간은 넉넉히, 오류나 시간 초과가 나면 한 번
+- * 다시 시도하고, 다시 실패하면 분석을 FAILED(ANALYSIS_FAILED)로 끝낸다.
+- * <p>
+- * 대기 시간은 고정 5분이 아니라 요청 크기(배치 수)에 비례해서 늘어난다. AI
+- * 서버는 조항을 배치로 나눠 순서대로 Gemini를 부르므로(명세서 5장), 조항이
+- * 많을수록 끝까지 걸리는 시간도 길어진다. 배치 하나당 1분을 더하고, 작은
+- * 요청에서는 5분보다 줄지 않도록 바닥을 둔다(기존 동작 유지). 너무 커지는
+- * 것을 막기 위한 안전장치로 위쪽 한도도 둔다.
++/** AI HTTP boundary: bounded response aggregation and no automatic whole-request replay.
++ * Upstream transient retries are owned by FastAPI; backend resume requires review.
+  */
+ @Component
+ public class AiClient {
+@@ -38,12 +31,13 @@ public class AiClient {
+     private final WebClient aiWebClient;
+ 
+     public AiClient(WebClient aiWebClient) {
+-        this.aiWebClient = aiWebClient;
++        this.aiWebClient = aiWebClient == null ? null : aiWebClient.mutate().codecs(c -> c.defaultCodecs()
++                .maxInMemorySize(40 * 1024 * 1024)).build();
+     }
+ 
+     public ExtractResponse extract(ExtractRequest request) {
+         Duration timeout = batchTimeout(ceilDiv(request.clauses().size(), CLAUSES_PER_BATCH));
+-        return callWithRetry("/ai/extract", () -> aiWebClient.post()
++        return callOnce("/ai/extract", () -> aiWebClient.post()
+                 .uri("/ai/extract")
+                 .bodyValue(request)
+                 .retrieve()
+@@ -58,7 +52,7 @@ public class AiClient {
+      * 쓴다.
+      */
+     public CandidatePlanResponse candidatesPlan(CandidatePlanRequest request) {
+-        return callWithRetry("/ai/extract/candidates/plan", () -> aiWebClient.post()
++        return callOnce("/ai/extract/candidates/plan", () -> aiWebClient.post()
+                 .uri("/ai/extract/candidates/plan")
+                 .bodyValue(request)
+                 .retrieve()
+@@ -72,7 +66,7 @@ public class AiClient {
+      * 이 호출도 Gemini를 부르지 않는다.
+      */
+     public CandidateMergeResponse candidatesMerge(CandidateMergeRequest request) {
+-        return callWithRetry("/ai/extract/candidates/merge", () -> aiWebClient.post()
++        return callOnce("/ai/extract/candidates/merge", () -> aiWebClient.post()
+                 .uri("/ai/extract/candidates/merge")
+                 .bodyValue(request)
+                 .retrieve()
+@@ -84,7 +78,7 @@ public class AiClient {
+         // AI 서버는 explain 항목을 하나씩 순서대로 처리하므로(초안·검토를 각각
+         // 호출), 항목 수 자체가 배치 수와 같다.
+         Duration timeout = batchTimeout(request.items().size());
+-        return callWithRetry("/ai/explain", () -> aiWebClient.post()
++        return callOnce("/ai/explain", () -> aiWebClient.post()
+                 .uri("/ai/explain")
+                 .bodyValue(request)
+                 .retrieve()
+@@ -102,15 +96,13 @@ public class AiClient {
+         return (total + perBatch - 1) / perBatch;
+     }
+ 
+-    private <T> T callWithRetry(String uri, Supplier<T> call) {
++    private <T> T callOnce(String uri, Supplier<T> call) {
+         try {
+             return call.get();
+         } catch (RuntimeException firstFailure) {
+-            try {
+-                return call.get();
+-            } catch (RuntimeException secondFailure) {
+-                throw new AiCallFailedException(uri + " 호출이 재시도 후에도 실패했습니다.", secondFailure);
+-            }
++            // FastAPI owns bounded upstream retries/cooldown. Never immediately
++            // replay a complete HTTP request, including permanent 413/422.
++            throw new AiCallFailedException("AI 요청에 실패했습니다.", firstFailure);
+         }
+     }
+ }
+diff --git a/backend/src/main/java/com/insurance/explainer/analysis/AnalysisController.java b/backend/src/main/java/com/insurance/explainer/analysis/AnalysisController.java
+index 8be7733..884a25e 100644
+--- a/backend/src/main/java/com/insurance/explainer/analysis/AnalysisController.java
++++ b/backend/src/main/java/com/insurance/explainer/analysis/AnalysisController.java
+@@ -25,6 +25,14 @@ public class AnalysisController {
+         this.analysisStore = analysisStore;
+     }
+ 
++    // Local backend proposal: explicitly expose candidate scope, never private source/quotes.
++    @GetMapping("/{analysisId}/candidate-progress")
++    public java.util.Map<String,Object> candidateProgress(@PathVariable String analysisId){
++        if(analysisStore.get(analysisId)==null)throw ApiException.notFound("분석을 찾을 수 없습니다.");
++        var checkpoint=analysisStore.candidateCheckpoint(analysisId);
++        return checkpoint==null ? java.util.Map.of("state","NOT_STARTED","fullDocumentSuccess",false) : checkpoint.summary();
++    }
++
+     // POST /api/analyses - 분석 시작
+     @PostMapping
+     public ResponseEntity<StartResponse> start(@RequestBody StartRequest request) {
+diff --git a/backend/src/main/java/com/insurance/explainer/analysis/AnalysisRunner.java b/backend/src/main/java/com/insurance/explainer/analysis/AnalysisRunner.java
+index cb8039c..d8272c7 100644
+--- a/backend/src/main/java/com/insurance/explainer/analysis/AnalysisRunner.java
++++ b/backend/src/main/java/com/insurance/explainer/analysis/AnalysisRunner.java
+@@ -118,24 +118,9 @@ public class AnalysisRunner {
+         }
+     }
+ 
+-    // 후보 필터링을 쓰지 않고 전체 조항을 대상으로 한다("mode":"recall"은 AI
+-    // 서버가 항목별 근거가 없으면 자동으로 넓게 재검색하므로, 명시적인
+-    // broad/full 승격은 지금은 두지 않는다. 명세서 5장/candidates 연동 문서 참고).
++    // Candidate mode filters source; completion covers candidates only.
+     private static final String CANDIDATE_MODE = "recall";
+ 
+-    /**
+-     * 조항이 많은 약관은 기존 /ai/extract 한 번으로 보내면 배치/예산 초과(413)가
+-     * 난다. 그래서 AI 서버의 무손실 분할 계획(candidates/plan)을 먼저 받아
+-     * 조각(part)별로 나눠 순서대로 /ai/extract를 부르고, 끝나면 candidates/merge로
+-     * 원래 조항 기준 결과를 되돌려 받는다(명세서 5장, candidates 연동 문서).
+-     * <p>
+-     * 조각 하나가 (AiClient의 재시도까지) 실패해도 그 조각은 빈 추출 결과로
+-     * 채워 병합을 계속 진행한다 — merge는 모든 조각이 있어야 하므로, 빈 결과를
+-     * 넣어 두면 그 조각의 조항만 추출 결과가 없어 F-17 "찾지 못함"으로 자연스럽게
+-     * 남고, 다른 조각에서 성공한 결과는 그대로 쓴다. 조각이 하나도 성공하지
+-     * 못했을 때만(계획 자체가 조각 하나뿐인 평소 상황을 포함) 기존처럼 분석을
+-     * FAILED로 끝낸다.
+-     */
+     private List<ExtractionDto> extract(AnalysisRecord record) {
+         List<ClauseDto> clauseDtos = record.clauses().stream().map(this::toClauseDto).toList();
+         List<Integer> allCheckItemIds = CheckItem.ALL.stream().map(CheckItem::id).toList();
+@@ -146,27 +131,32 @@ public class AnalysisRunner {
+         List<CandidatePartDto> parts = plan.candidatePlan().parts();
+ 
+         Map<String, ExtractResponse> responseByPartId = new LinkedHashMap<>();
+-        RuntimeException lastFailure = null;
+-        int successCount = 0;
++        CandidatePlanRequest original=new CandidatePlanRequest(sourceRequest,CANDIDATE_MODE,null);
++        analysisStore.candidateCheckpoint(record.analysisId(),new CandidateCheckpoint(original,plan,responseByPartId,null,"PLANNED",plan.selection().coverage()));
+         for (CandidatePartDto part : parts) {
+             try {
+                 responseByPartId.put(part.partId(), aiClient.extract(part.request()));
+-                successCount++;
++                analysisStore.candidateCheckpoint(record.analysisId(),new CandidateCheckpoint(original,plan,responseByPartId,null,"RUNNING",plan.selection().coverage()));
+             } catch (RuntimeException partFailure) {
+-                lastFailure = partFailure;
+-                responseByPartId.put(part.partId(), new ExtractResponse(List.of()));
++                analysisStore.candidateCheckpoint(record.analysisId(),new CandidateCheckpoint(original,plan,responseByPartId,part.partId(),
++                        responseByPartId.isEmpty()?"FAILED":"PARTIAL",plan.selection().coverage()));
++                throw partFailure;
+             }
+         }
+-        if (successCount == 0 && !parts.isEmpty()) {
+-            throw lastFailure;
+-        }
+ 
+         List<PartResultDto> partResults = parts.stream()
+                 .map(part -> new PartResultDto(part.partId(), responseByPartId.get(part.partId())))
+                 .toList();
+         CandidateMergeRequest mergeRequest = new CandidateMergeRequest(sourceRequest, CANDIDATE_MODE, null,
+                 plan.selection().selectionId(), plan.candidatePlan().planId(), partResults);
+-        return aiClient.candidatesMerge(mergeRequest).extractions();
++        try {
++            var merged=aiClient.candidatesMerge(mergeRequest);
++            analysisStore.candidateCheckpoint(record.analysisId(),new CandidateCheckpoint(original,plan,responseByPartId,null,"CANDIDATES_COMPLETE",merged.coverage()));
++            return merged.extractions();
++        } catch(RuntimeException mergeFailure) {
++            analysisStore.candidateCheckpoint(record.analysisId(),new CandidateCheckpoint(original,plan,responseByPartId,null,"MERGE_FAILED",plan.selection().coverage()));
++            throw mergeFailure;
++        }
+     }
+ 
+     private List<ExplainItemDto> buildExplainItems(List<ExtractionDto> validated,
+@@ -199,6 +189,13 @@ public class AnalysisRunner {
+         if (items.isEmpty()) {
+             return List.of();
+         }
++        // Bound AI's per-request generation/review budget. Sequential only.
++        if(items.size()>2){
++            List<CardDto> result=new ArrayList<>();
++            for(int offset=0;offset<items.size();offset+=2)
++                result.addAll(explain(record,items.subList(offset,Math.min(offset+2,items.size()))));
++            return result;
++        }
+         ExplainRequest wholeRequest = new ExplainRequest(record.analysisId(), items);
+         try {
+             return aiClient.explain(wholeRequest).cards();
+diff --git a/backend/src/main/java/com/insurance/explainer/analysis/AnalysisStore.java b/backend/src/main/java/com/insurance/explainer/analysis/AnalysisStore.java
+index e907ebe..e03b1c2 100644
+--- a/backend/src/main/java/com/insurance/explainer/analysis/AnalysisStore.java
++++ b/backend/src/main/java/com/insurance/explainer/analysis/AnalysisStore.java
+@@ -11,6 +11,9 @@ import java.util.concurrent.ConcurrentHashMap;
+ public class AnalysisStore {
+ 
+     private final Map<String, AnalysisRecord> analyses = new ConcurrentHashMap<>();
++    private final Map<String,CandidateCheckpoint> candidates=new ConcurrentHashMap<>();
++    public void candidateCheckpoint(String id,CandidateCheckpoint checkpoint){candidates.put(id,checkpoint);}
++    public CandidateCheckpoint candidateCheckpoint(String id){return candidates.get(id);}
+ 
+     public void save(AnalysisRecord record) {
+         analyses.put(record.analysisId(), record);
+@@ -22,6 +25,7 @@ public class AnalysisStore {
+ 
+     public void delete(String analysisId) {
+         analyses.remove(analysisId);
++        candidates.remove(analysisId);
+     }
+ 
+     /** F-21: 문서가 삭제(즉시 또는 보관 기한 만료)될 때 그 문서로 만든 분석도 함께 지우기 위함. */
+diff --git a/backend/src/main/java/com/insurance/explainer/analysis/ai/CandidateMergeResponse.java b/backend/src/main/java/com/insurance/explainer/analysis/ai/CandidateMergeResponse.java
+index 396e5a5..f7d9cec 100644
+--- a/backend/src/main/java/com/insurance/explainer/analysis/ai/CandidateMergeResponse.java
++++ b/backend/src/main/java/com/insurance/explainer/analysis/ai/CandidateMergeResponse.java
+@@ -6,9 +6,10 @@ import com.fasterxml.jackson.databind.annotation.JsonNaming;
+ 
+ import java.util.List;
+ 
+-// POST /ai/extract/candidates/merge 응답. coverage/selection_id/plan_id는
+-// 지금은 쓰지 않아 무시한다(나중에 "일부만 검토함" 안내에 쓸 수 있다).
++// Local backend proposal: retain candidate scope and merge identities.
+ @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
+ @JsonIgnoreProperties(ignoreUnknown = true)
+-public record CandidateMergeResponse(List<ExtractionDto> extractions) {
++public record CandidateMergeResponse(List<ExtractionDto> extractions,
++        com.fasterxml.jackson.databind.JsonNode coverage, String selectionId, String planId) {
++    public CandidateMergeResponse(List<ExtractionDto> extractions){this(extractions,null,null,null);}
+ }
+diff --git a/backend/src/main/java/com/insurance/explainer/analysis/ai/SelectionDto.java b/backend/src/main/java/com/insurance/explainer/analysis/ai/SelectionDto.java
+index 1cc465a..98f6df5 100644
+--- a/backend/src/main/java/com/insurance/explainer/analysis/ai/SelectionDto.java
++++ b/backend/src/main/java/com/insurance/explainer/analysis/ai/SelectionDto.java
+@@ -4,9 +4,9 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+ import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+ import com.fasterxml.jackson.databind.annotation.JsonNaming;
+ 
+-// 후보 선정 메타데이터. coverage 등 나머지 필드는 지금은 쓰지 않아 무시한다.
+-// selectionId는 candidates/merge 요청에 그대로 다시 실어 보내야 한다.
++// Local backend proposal: preserve selection identity, rule version and scope.
+ @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
+ @JsonIgnoreProperties(ignoreUnknown = true)
+-public record SelectionDto(String selectionId) {
++public record SelectionDto(String selectionId, String policyVersion, com.fasterxml.jackson.databind.JsonNode coverage) {
++    public SelectionDto(String selectionId){this(selectionId,null,null);}
+ }
+diff --git a/backend/src/test/java/com/insurance/explainer/analysis/AnalysisServiceTest.java b/backend/src/test/java/com/insurance/explainer/analysis/AnalysisServiceTest.java
+index fd9197e..504e346 100644
+--- a/backend/src/test/java/com/insurance/explainer/analysis/AnalysisServiceTest.java
++++ b/backend/src/test/java/com/insurance/explainer/analysis/AnalysisServiceTest.java
+@@ -177,7 +177,7 @@ class AnalysisServiceTest {
+         assertThat(finalRecord.errorCode()).isEqualTo("ANALYSIS_FAILED");
+     }
+ 
+-    // ---- candidates/plan·merge 기반 추출: 조각 하나만 실패해도 분석 전체가 FAILED로 끝나지 않아야 한다 ----
++    // Required candidate part failures must remain incomplete.
+ 
+     @Test
+     void 추출_계획이_여러_조각이면_순서대로_호출되고_결과가_합쳐진다() {
+@@ -215,7 +215,7 @@ class AnalysisServiceTest {
+     }
+ 
+     @Test
+-    void 추출_조각_하나만_실패해도_나머지_조각_결과는_포함되고_분석은_DONE으로_끝난다() {
++    void failed_required_part_aborts_without_merge_or_false_not_found() {
+         seedReadyDocument();
+         aiClient.onCandidatesPlan(req -> new CandidatePlanResponse(
+                 new SelectionDto("selection-1"),
+@@ -241,18 +241,12 @@ class AnalysisServiceTest {
+ 
+         AnalysisRecord queued = service.start(new StartRequest("doc-1", List.of("rider01"), false));
+         AnalysisRecord finalRecord = analysisStore.get(queued.analysisId());
+-
+-        // rider 조항이 속한 조각만 실패했을 뿐, 분석 전체는 FAILED가 아니라 DONE으로 끝난다.
+-        assertThat(finalRecord.status()).isEqualTo(AnalysisStatus.DONE);
+-        assertThat(finalRecord.cards()).hasSize(1);
+-        assertThat(finalRecord.cards().get(0).checkItem()).isEqualTo(1);
+-
+-        var result = com.insurance.explainer.analysis.dto.ResultResponseBuilder.build(finalRecord);
+-        assertThat(result.checkSummary()).filteredOn(c -> c.checkItem() == 1)
+-                .extracting(c -> c.status()).containsExactly("FOUND");
+-        // F-17: 실패한 조각에 속한 2번 항목은 추출 결과가 없으니 "찾지 못함"으로 자연스럽게 남는다.
+-        assertThat(result.checkSummary()).filteredOn(c -> c.checkItem() == 2)
+-                .extracting(c -> c.status()).containsExactly("NOT_FOUND");
++        assertThat(finalRecord.status()).isEqualTo(AnalysisStatus.FAILED);
++        assertThat(finalRecord.cards()).isEmpty();
++        CandidateCheckpoint checkpoint=analysisStore.candidateCheckpoint(queued.analysisId());
++        assertThat(checkpoint.state()).isEqualTo("PARTIAL");
++        assertThat(checkpoint.succeeded()).hasSize(1);
++        assertThat(checkpoint.failedPartId()).isEqualTo("part-rider");
+     }
+ 
+     @Test
+--- /dev/null
++++ b/backend/src/main/java/com/insurance/explainer/analysis/CandidateCheckpoint.java
+@@ -0,0 +1,21 @@
++package com.insurance.explainer.analysis;
++
++import com.insurance.explainer.analysis.ai.*;
++import com.fasterxml.jackson.databind.JsonNode;
++import java.util.*;
++
++/** Backend proposal only: private in-memory evidence, NOT durable/resumable yet. */
++public record CandidateCheckpoint(CandidatePlanRequest source, CandidatePlanResponse plan,
++        Map<String,ExtractResponse> succeeded, String failedPartId, String state, JsonNode coverage) {
++    public CandidateCheckpoint {succeeded=Map.copyOf(succeeded);}
++    public Map<String,Object> summary(){
++        Map<String,Object> out=new LinkedHashMap<>();out.put("state",state);
++        out.put("completedPartIds",new ArrayList<>(succeeded.keySet()));
++        out.put("pendingPartIds",plan.candidatePlan().parts().stream().map(CandidatePartDto::partId).filter(id->!succeeded.containsKey(id)).toList());
++        out.put("failedPartId",failedPartId);out.put("selectionId",plan.selection().selectionId());
++        out.put("planId",plan.candidatePlan().planId());out.put("policyVersion",plan.selection().policyVersion());
++        out.put("coverage",coverage);out.put("fullDocumentSuccess",false);
++        out.put("resumable",false);out.put("durable",false);
++        return out;
++    }
++}
+--- /dev/null
++++ b/backend/src/test/java/com/insurance/explainer/analysis/Pr1920HttpIntegrationTest.java
+@@ -0,0 +1,126 @@
++package com.insurance.explainer.analysis;
++
++import com.fasterxml.jackson.databind.*;
++import com.insurance.explainer.Application;
++import com.insurance.explainer.document.*;
++import com.insurance.explainer.structure.Clause;
++import org.junit.jupiter.api.*;
++import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.boot.test.web.client.TestRestTemplate;
++import org.springframework.boot.test.web.server.LocalServerPort;
++import org.springframework.core.io.FileSystemResource;
++import org.springframework.http.*;
++import org.springframework.test.context.DynamicPropertyRegistry;
++import org.springframework.test.context.DynamicPropertySource;
++import org.springframework.util.LinkedMultiValueMap;
++import java.nio.file.*;
++import java.time.*;
++import java.util.*;
++import static org.assertj.core.api.Assertions.*;
++
++/** Real local PDF + Spring + real FastAPI routes with fabricated Gemini only. */
++@EnabledIfEnvironmentVariable(named="PR1920_MOCK_URL",matches=".+")
++@SpringBootTest(classes=Application.class,webEnvironment=SpringBootTest.WebEnvironment.RANDOM_PORT,
++ properties={"app.mock-documents=false","logging.level.root=WARN","logging.level.org.springframework=WARN"})
++@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
++class Pr1920HttpIntegrationTest {
++ static String parsedDocumentId;
++ @DynamicPropertySource static void url(DynamicPropertyRegistry r){r.add("ai.base-url",()->System.getenv("PR1920_MOCK_URL"));}
++ @LocalServerPort int port;
++ @Autowired DocumentStore documents;
++ @Autowired AnalysisStore analyses;
++ final TestRestTemplate http=new TestRestTemplate();final ObjectMapper mapper=new ObjectMapper();
++ String base(){return "http://127.0.0.1:"+port;}
++ String ai(){return System.getenv("PR1920_MOCK_URL");}
++ boolean safe(){return !"false".equals(System.getenv("PR1920_EXPECT_SAFE_FAILURE"));}
++ JsonNode metrics()throws Exception{return mapper.readTree(http.getForObject(ai()+"/test/metrics",String.class));}
++ AnalysisRecord run(String document)throws Exception{
++  var start=http.postForEntity(base()+"/api/analyses",Map.of("documentId",document,"viewAll",true),String.class);
++  assertThat(start.getStatusCode().value()).isEqualTo(202);String id=mapper.readTree(start.getBody()).path("analysisId").asText();
++  long end=System.nanoTime()+Duration.ofSeconds(90).toNanos();AnalysisRecord r;
++  do{Thread.sleep(50);r=analyses.get(id);}while((r.status()==AnalysisStatus.RUNNING||r.status()==AnalysisStatus.QUEUED)&&System.nanoTime()<end);
++  return r;
++ }
++ void report(String name,Map<String,Object> report)throws Exception{
++  String root=System.getenv("PR1920_REPORT_DIR");if(root!=null){var dir=Path.of(root);Files.createDirectories(dir);mapper.writeValue(dir.resolve(name+".json").toFile(),report);}
++ }
++ @Test @Order(1) void actual_pdf_upload_parse_candidate_extract_merge_and_result()throws Exception{
++  http.postForObject(ai()+"/test/control",Map.of("code",0),String.class);
++  var body=new LinkedMultiValueMap<String,Object>();body.add("file",new FileSystemResource(System.getenv("PR1920_PDF")));
++  var headers=new HttpHeaders();headers.setContentType(MediaType.MULTIPART_FORM_DATA);
++  var upload=http.postForEntity(base()+"/api/documents",new HttpEntity<>(body,headers),String.class);
++  assertThat(upload.getStatusCode().value()).isEqualTo(202);String id=mapper.readTree(upload.getBody()).path("documentId").asText();
++  long end=System.nanoTime()+Duration.ofSeconds(60).toNanos();DocumentRecord doc;
++  do{Thread.sleep(100);doc=documents.get(id);}while(doc.status()==DocumentStatus.PENDING&&System.nanoTime()<end);
++  assertThat(doc.status()).isEqualTo(DocumentStatus.READY);assertThat(doc.pageCount()).isEqualTo(256);
++  assertThat(doc.clauses()).hasSize(1472);
++  parsedDocumentId=id;
++  long start=System.nanoTime();var r=run(id);var m=metrics();
++  var result=http.getForEntity(base()+"/api/analyses/"+r.analysisId()+"/result",String.class);
++  report("full_pdf_"+(safe()?"safe":"baseline"),Map.of("state",r.status().name(),"result_http",result.getStatusCode().value(),
++   "source_clauses",doc.clauses().size(),"pages",doc.pageCount(),"cards",r.cards().size(),"metrics",m,
++   "elapsed_ms",(System.nanoTime()-start)/1_000_000));
++  if(!safe()){assertThat(r.status()).isEqualTo(AnalysisStatus.FAILED);return;}
++  assertThat(r.status()).isEqualTo(AnalysisStatus.DONE);assertThat(result.getStatusCode().value()).isEqualTo(200);
++  assertThat(m.path("parts").asInt()).isGreaterThan(1);assertThat(m.path("failed_calls").asInt()).isZero();
++  assertThat(m.path("extract_calls").asInt()).isEqualTo(m.path("parts").asInt());assertThat(m.path("merge_calls").asInt()).isEqualTo(1);
++  assertThat(m.path("invalid_part_budget").asInt()).isZero();assertThat(m.path("policy_version").asText()).isEqualTo("recall-rules-2");
++  assertThat(m.path("metadata_verified").asBoolean()).isTrue();assertThat(m.path("quote_verified").asBoolean()).isTrue();
++  assertThat(m.path("contract_verified").asBoolean()).isTrue();assertThat(m.path("real_gemini_calls").asInt()).isZero();
++  assertThat(m.path("generation_attempts").asInt()).isEqualTo(r.cards().size());
++  assertThat(m.path("review_attempts").asInt()).isEqualTo(r.cards().size());
++  for(JsonNode response:m.path("explain_responses")){
++   assertThat(response.path("http").asInt()).isEqualTo(200);
++   assertThat(response.path("pass").asInt()).isEqualTo(response.path("items").asInt());
++  }
++  var checkpoint=analyses.candidateCheckpoint(r.analysisId());
++  assertThat(checkpoint.coverage()).isEqualTo(m.path("last_coverage"));
++  assertThat(checkpoint.coverage().path("unselected_count").asInt()).isEqualTo(1472-m.path("candidate_count").asInt());
++  var scoped=mapper.readTree(http.getForObject(base()+"/api/analyses/"+r.analysisId()+"/candidate-progress",String.class));
++  assertThat(scoped.path("state").asText()).isEqualTo("CANDIDATES_COMPLETE");
++  assertThat(scoped.path("coverage")).isEqualTo(checkpoint.coverage());
++  Map<String,Clause> source=new HashMap<>();doc.clauses().forEach(c->source.put(c.clauseId(),c));
++  for(var card:r.cards()){
++   var c=source.get(card.clauseId());assertThat(c).isNotNull();assertThat(c.riderId()).isEqualTo(card.riderId());
++   assertThat(c.page()).isEqualTo(card.page());assertThat(c.section()).isEqualTo(card.section());
++   assertThat(c.article()).isEqualTo(card.article());assertThat(c.paragraph()).isEqualTo(card.paragraph());
++   assertThat(c.fromTable()).isEqualTo(card.fromTable());
++   assertThat(new QuoteValidatorImpl().isQuoteFoundInClause(new com.insurance.explainer.analysis.ai.ExtractionDto(card.checkItem(),card.clauseId(),card.quote()),c)).isTrue();
++  }
++ }
++ @Test @Order(2) void failed_required_part_never_becomes_done_or_not_found()throws Exception{
++  for(int code:new int[]{503,502,413,422,429,504}){
++   http.postForObject(ai()+"/test/control",Map.of("code",code),String.class);
++   var rows=new ArrayList<Clause>();for(int i=0;i<56;i++)rows.add(new Clause("synthetic-"+i,null,"synthetic","article-"+i,"보험금을 지급하지 않는 사유",null,1,false,"회사는 고의로 발생한 손해에 대해서는 보험금을 지급하지 않습니다."));
++   String id="fault-"+code;documents.save(DocumentRecord.pending(id,OffsetDateTime.now().plusHours(1)).withReady(1,List.of(),rows));
++   var r=run(id);var m=metrics();var result=http.getForEntity(base()+"/api/analyses/"+r.analysisId()+"/result",String.class);
++   report("fault_"+code+"_"+(safe()?"safe":"baseline"),Map.of("state",r.status().name(),"result_http",result.getStatusCode().value(),"metrics",m,
++    "not_found_in_result",result.getBody()!=null&&result.getBody().contains("NOT_FOUND")));
++   if(safe()){
++    assertThat(r.status()).isEqualTo(AnalysisStatus.FAILED);assertThat(result.getStatusCode().value()).isEqualTo(409);
++    assertThat(m.path("merge_calls").asInt()).isZero();assertThat(m.path("explain_calls").asInt()).isZero();
++    assertThat(m.path("later_after_failure").asInt()).isZero();assertThat(m.path("failed_empty_submitted").asInt()).isZero();
++    assertThat(m.path("failed_calls").asInt()).isEqualTo(1);
++    var cp=analyses.candidateCheckpoint(r.analysisId());assertThat(cp.state()).isEqualTo("PARTIAL");
++    assertThat(cp.succeeded()).hasSize(1);assertThat(cp.failedPartId()).isNotNull();
++    assertThat(cp.summary().get("resumable")).isEqualTo(false);
++   }else{
++    assertThat(r.status()).isEqualTo(AnalysisStatus.DONE);assertThat(result.getStatusCode().value()).isEqualTo(200);
++    assertThat(m.path("failed_empty_submitted").asInt()).isEqualTo(1);assertThat(m.path("failed_calls").asInt()).isEqualTo(2);
++    assertThat(m.path("later_after_failure").asInt()).isGreaterThan(0);assertThat(result.getBody()).contains("NOT_FOUND");
++   }
++  }
++ }
++ @Test @Order(3) void large_plan_reproduces_default_webclient_256k_limit()throws Exception{
++  http.postForObject(ai()+"/test/control",Map.of("code",0),String.class);
++  var doc=documents.get(parsedDocumentId);
++  var rows=doc.clauses().stream().map(c->new com.insurance.explainer.analysis.ai.ClauseDto(c.clauseId(),c.riderId(),c.section(),c.article(),c.articleTitle(),c.paragraph(),c.page(),c.fromTable(),c.text())).toList();
++  var source=new com.insurance.explainer.analysis.ai.ExtractRequest("buffer-probe",List.of(1,2,3,4,5,6),rows);
++  var client=org.springframework.web.reactive.function.client.WebClient.builder().baseUrl(ai()).build();
++  assertThatThrownBy(()->client.post().uri("/ai/extract/candidates/plan").bodyValue(Map.of("source_request",source,"mode","recall"))
++   .retrieve().bodyToMono(String.class).block(Duration.ofSeconds(30)))
++   .hasRootCauseInstanceOf(org.springframework.core.io.buffer.DataBufferLimitException.class);
++ }
++}

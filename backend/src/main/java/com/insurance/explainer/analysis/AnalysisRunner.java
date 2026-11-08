@@ -118,24 +118,9 @@ public class AnalysisRunner {
         }
     }
 
-    // 후보 필터링을 쓰지 않고 전체 조항을 대상으로 한다("mode":"recall"은 AI
-    // 서버가 항목별 근거가 없으면 자동으로 넓게 재검색하므로, 명시적인
-    // broad/full 승격은 지금은 두지 않는다. 명세서 5장/candidates 연동 문서 참고).
+    // Candidate mode filters source; completion covers candidates only.
     private static final String CANDIDATE_MODE = "recall";
 
-    /**
-     * 조항이 많은 약관은 기존 /ai/extract 한 번으로 보내면 배치/예산 초과(413)가
-     * 난다. 그래서 AI 서버의 무손실 분할 계획(candidates/plan)을 먼저 받아
-     * 조각(part)별로 나눠 순서대로 /ai/extract를 부르고, 끝나면 candidates/merge로
-     * 원래 조항 기준 결과를 되돌려 받는다(명세서 5장, candidates 연동 문서).
-     * <p>
-     * 조각 하나가 (AiClient의 재시도까지) 실패해도 그 조각은 빈 추출 결과로
-     * 채워 병합을 계속 진행한다 — merge는 모든 조각이 있어야 하므로, 빈 결과를
-     * 넣어 두면 그 조각의 조항만 추출 결과가 없어 F-17 "찾지 못함"으로 자연스럽게
-     * 남고, 다른 조각에서 성공한 결과는 그대로 쓴다. 조각이 하나도 성공하지
-     * 못했을 때만(계획 자체가 조각 하나뿐인 평소 상황을 포함) 기존처럼 분석을
-     * FAILED로 끝낸다.
-     */
     private List<ExtractionDto> extract(AnalysisRecord record) {
         List<ClauseDto> clauseDtos = record.clauses().stream().map(this::toClauseDto).toList();
         List<Integer> allCheckItemIds = CheckItem.ALL.stream().map(CheckItem::id).toList();
@@ -146,19 +131,17 @@ public class AnalysisRunner {
         List<CandidatePartDto> parts = plan.candidatePlan().parts();
 
         Map<String, ExtractResponse> responseByPartId = new LinkedHashMap<>();
-        RuntimeException lastFailure = null;
-        int successCount = 0;
+        CandidatePlanRequest original=new CandidatePlanRequest(sourceRequest,CANDIDATE_MODE,null);
+        analysisStore.candidateCheckpoint(record.analysisId(),new CandidateCheckpoint(original,plan,responseByPartId,null,"PLANNED",plan.selection().coverage()));
         for (CandidatePartDto part : parts) {
             try {
                 responseByPartId.put(part.partId(), aiClient.extract(part.request()));
-                successCount++;
+                analysisStore.candidateCheckpoint(record.analysisId(),new CandidateCheckpoint(original,plan,responseByPartId,null,"RUNNING",plan.selection().coverage()));
             } catch (RuntimeException partFailure) {
-                lastFailure = partFailure;
-                responseByPartId.put(part.partId(), new ExtractResponse(List.of()));
+                analysisStore.candidateCheckpoint(record.analysisId(),new CandidateCheckpoint(original,plan,responseByPartId,part.partId(),
+                        responseByPartId.isEmpty()?"FAILED":"PARTIAL",plan.selection().coverage()));
+                throw partFailure;
             }
-        }
-        if (successCount == 0 && !parts.isEmpty()) {
-            throw lastFailure;
         }
 
         List<PartResultDto> partResults = parts.stream()
@@ -166,7 +149,14 @@ public class AnalysisRunner {
                 .toList();
         CandidateMergeRequest mergeRequest = new CandidateMergeRequest(sourceRequest, CANDIDATE_MODE, null,
                 plan.selection().selectionId(), plan.candidatePlan().planId(), partResults);
-        return aiClient.candidatesMerge(mergeRequest).extractions();
+        try {
+            var merged=aiClient.candidatesMerge(mergeRequest);
+            analysisStore.candidateCheckpoint(record.analysisId(),new CandidateCheckpoint(original,plan,responseByPartId,null,"CANDIDATES_COMPLETE",merged.coverage()));
+            return merged.extractions();
+        } catch(RuntimeException mergeFailure) {
+            analysisStore.candidateCheckpoint(record.analysisId(),new CandidateCheckpoint(original,plan,responseByPartId,null,"MERGE_FAILED",plan.selection().coverage()));
+            throw mergeFailure;
+        }
     }
 
     private List<ExplainItemDto> buildExplainItems(List<ExtractionDto> validated,
@@ -198,6 +188,13 @@ public class AnalysisRunner {
     private List<CardDto> explain(AnalysisRecord record, List<ExplainItemDto> items) {
         if (items.isEmpty()) {
             return List.of();
+        }
+        // Bound AI's per-request generation/review budget. Sequential only.
+        if(items.size()>2){
+            List<CardDto> result=new ArrayList<>();
+            for(int offset=0;offset<items.size();offset+=2)
+                result.addAll(explain(record,items.subList(offset,Math.min(offset+2,items.size()))));
+            return result;
         }
         ExplainRequest wholeRequest = new ExplainRequest(record.analysisId(), items);
         try {

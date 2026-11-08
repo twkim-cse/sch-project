@@ -4,9 +4,9 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 
-// 후보 선정 메타데이터. coverage 등 나머지 필드는 지금은 쓰지 않아 무시한다.
-// selectionId는 candidates/merge 요청에 그대로 다시 실어 보내야 한다.
+// Local backend proposal: preserve selection identity, rule version and scope.
 @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 @JsonIgnoreProperties(ignoreUnknown = true)
-public record SelectionDto(String selectionId) {
+public record SelectionDto(String selectionId, String policyVersion, com.fasterxml.jackson.databind.JsonNode coverage) {
+    public SelectionDto(String selectionId){this(selectionId,null,null);}
 }
