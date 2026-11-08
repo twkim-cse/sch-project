@@ -123,7 +123,7 @@ class Admission:
                 self.errors+=1;self.successes=0
                 self.effective=1
                 delay=min(60,2**min(self.errors,6))
-                if status==429 and isinstance(retry_after,(int,float)) and math.isfinite(retry_after) and retry_after>=0:
+                if isinstance(retry_after,(int,float)) and math.isfinite(retry_after) and retry_after>=0:
                     delay=max(delay,retry_after)
                 self.cooldown=max(self.cooldown,self.clock()+delay)
             elif success:

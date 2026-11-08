@@ -190,12 +190,17 @@ class ExplainStabilityTests(unittest.TestCase):
         self.assertIn('stage=meaning_review', self.logs)
         self.assertIn('item_index=1', self.logs)
 
-    def test_extract_and_classify_keep_existing_http_options(self):
+    def test_classify_unchanged_extract_has_explicit_single_sdk_attempt(self):
         self.h.responses({'doc_type': 'TERMS', 'product_name': None, 'version_label': None}, {'extractions': []})
         self.assertEqual(self.h.api.post('/ai/classify', json={'document_id': 'd', 'pages': []}).status_code, 200)
         self.assertEqual(self.h.api.post('/ai/extract', json={'analysis_id': 'a', 'check_items': [1], 'clauses': [{'clause_id': 'c', 'page': 1, 'text': 'synthetic'}]}).status_code, 200)
-        self.assertTrue(all(c.kwargs['config'].http_options is None for c in self.mock.call_args_list))
-        self.assertEqual(self.h.mock.models.list.call_args.kwargs, {})
+        self.assertIsNone(self.mock.call_args_list[0].kwargs['config'].http_options)
+        options=self.mock.call_args_list[1].kwargs['config'].http_options
+        self.assertEqual(options.retry_options.attempts,1)
+        self.assertEqual(options.timeout,90_000)
+        lookup=self.h.mock.models.list.call_args.kwargs['config'].http_options
+        self.assertEqual(lookup.retry_options.attempts,1)
+        self.assertEqual(lookup.timeout,15_000)
 
     def test_real_sdk_forwards_per_call_http_timeout_without_network(self):
         from google import genai

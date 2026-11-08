@@ -21,7 +21,14 @@ KEYWORDS = {
 
 
 class ExtractPlanningError(ValueError):
-    pass
+    def __init__(self, reason, *, input_bytes=None, batch_count=None):
+        # Only fixed identifiers and numeric metadata may reach the log.
+        self.reason = reason if reason in (
+            'single_clause_exceeds_input_budget', 'request_exceeds_batch_limit'
+        ) else 'unknown_planning_error'
+        self.input_bytes = input_bytes
+        self.batch_count = batch_count
+        super().__init__(self.reason)
 
 
 @dataclass
@@ -90,8 +97,9 @@ def plan_extraction(clauses, check_items, definitions, instruction):
 
     # Preflight every clause before any model call, even low-priority clauses.
     for clause in clauses:
-        if not fits(make_batch([clause], definitions, instruction)):
-            raise ExtractPlanningError("single_clause_exceeds_input_budget")
+        single = make_batch([clause], definitions, instruction)
+        if not fits(single):
+            raise ExtractPlanningError("single_clause_exceeds_input_budget", input_bytes=single.input_bytes)
     whole = make_batch(clauses, definitions, instruction)
     if fits(whole):
         validate_batch_coverage(clauses, [whole])
@@ -130,7 +138,7 @@ def plan_extraction(clauses, check_items, definitions, instruction):
             flush()
     flush()
     if len(batches) > MAX_BATCHES:
-        raise ExtractPlanningError("request_exceeds_batch_limit")
+        raise ExtractPlanningError("request_exceeds_batch_limit", batch_count=len(batches))
     validate_batch_coverage(clauses, batches)
     # Context copies are allowed only for a boundary exception/reference in the
     # same article and policy scope, within the existing input/count budgets.

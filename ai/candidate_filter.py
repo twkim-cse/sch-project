@@ -13,7 +13,7 @@ from typing import Literal
 from bulk_extract import (BulkError, PartResult, MESSAGES, MAX_SOURCE_BYTES,
                          MAX_SOURCE_CLAUSES, canonical, digest, plan_bulk, merge_bulk)
 
-VERSION = 'recall-rules-1'
+VERSION = 'recall-rules-2'
 logger = logging.getLogger('uvicorn.error')
 
 DIRECT = {
@@ -55,6 +55,14 @@ def rejected_kind(clause):
         return 'empty_text'
     if clause.from_table:
         return None  # A short number/percentage can be a material table cell.
+    # Require multiple complete TOC rows, not a lone title + possible amount.
+    # Normative prose or an ambiguous continuation defeats this exclusion.
+    lines = [search(line) for line in clause.text.splitlines() if search(line)]
+    toc_row = r'제\d+조(?:\([^\d\n]+\)|[^\d\n]+?)(?:[.·…]+)?\d{1,3}'
+    normative = r'합니다|습니다|한다|된다|하여야|해야|이란|이라함|경우|다만|[①②③④⑤⑥⑦⑧⑨⑩]'
+    if (len(lines) >= 2 and all(re.fullmatch(toc_row, line) for line in lines)
+            and not re.search(normative, t)):
+        return 'multiple_complete_toc_rows'
     if re.fullmatch(r'[-－—×○◯]+',t):
         return None  # Missing table metadata must not erase a meaningful cell.
     if re.fullmatch(r'[\W_]+', t) and not re.search(r'%|‰', t):
@@ -68,7 +76,12 @@ def rejected_kind(clause):
     scope = search(clause.section) + search(clause.article_title)
     legal_scope = re.search(r'형법|민법|법규|관련법|성폭력|손괴의죄|절도와강도의죄', scope)
     criminal = re.search(r'징역|벌금|강간|살인|처벌|형에처|손괴', t)
-    if legal_scope and criminal and not re.search(INSURANCE, t) and not any(evidence(clause,i)[0] for i in DIRECT):
+    # A stale clinical/refund title cannot turn an unrelated penal provision
+    # into a policy rule. Actual body evidence still vetoes exclusion.
+    body_evidence = any(re.search(DIRECT[i], t) or
+                        (re.search(PAIRS[i][0], t) and re.search(PAIRS[i][1], t))
+                        for i in DIRECT)
+    if legal_scope and criminal and not re.search(INSURANCE, t) and not body_evidence:
         return 'clearly_unrelated_criminal_statute'
     return None
 
