@@ -167,7 +167,7 @@ class AnalysisControllerIntegrationTest {
     }
 
     @Test
-    void AI_서버가_꺼져있으면_재시도_후_FAILED_ANALYSIS_FAILED가_된다() {
+    void AI_서버가_꺼져있으면_FAILED_ANALYSIS_FAILED가_된다() {
         String documentId = uploadMockReadyDocument();
         aiServer.stop(0); // AI 서버를 내려서 연결 자체가 실패하게 만든다.
 

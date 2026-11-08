@@ -15,8 +15,14 @@ import java.time.Duration;
 import java.util.function.Supplier;
 
 /**
- * 명세서 5장 "호출 규칙": 대기 시간은 넉넉히, 오류나 시간 초과가 나면 한 번
- * 다시 시도하고, 다시 실패하면 분석을 FAILED(ANALYSIS_FAILED)로 끝낸다.
+ * 명세서 5장 "호출 규칙": 대기 시간은 넉넉히 두고, 오류나 시간 초과가 나면
+ * 분석을 FAILED(ANALYSIS_FAILED)로 끝낸다.
+ * <p>
+ * 일시적 오류(429/503 등)의 재시도·백오프·cooldown은 AI 서버가 이미 내부에서
+ * 책임진다(명세서 5장, AI 서버의 extract_resilience 재시도 정책 참고). 그래서
+ * 여기서는 같은 HTTP 요청을 바로 한 번 더 반복하지 않는다 — 특히 413/422처럼
+ * 영구적으로 실패하는 요청까지 즉시 재반복하면 AI 서버에 불필요한 부담만
+ * 늘어난다.
  * <p>
  * 대기 시간은 고정 5분이 아니라 요청 크기(배치 수)에 비례해서 늘어난다. AI
  * 서버는 조항을 배치로 나눠 순서대로 Gemini를 부르므로(명세서 5장), 조항이
@@ -35,15 +41,22 @@ public class AiClient {
     // 조항 수를 이 값으로 나누면 AI 서버가 실제로 처리할 배치 수에 가까워진다.
     private static final int CLAUSES_PER_BATCH = 25;
 
+    // 조항이 많은 약관은 candidates/plan·merge 응답(조각마다 원본 조항을 그대로
+    // 돌려줌)이 WebClient 기본 메모리 버퍼(256KB)를 쉽게 넘는다. AI 서버의 조각당
+    // 입력 한도(약 16MB)보다 넉넉한 상한만 두고, 그 한도 자체를 늘려주진 않는다.
+    private static final int MAX_RESPONSE_BYTES = 40 * 1024 * 1024;
+
     private final WebClient aiWebClient;
 
     public AiClient(WebClient aiWebClient) {
-        this.aiWebClient = aiWebClient;
+        this.aiWebClient = aiWebClient == null ? null : aiWebClient.mutate()
+                .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(MAX_RESPONSE_BYTES))
+                .build();
     }
 
     public ExtractResponse extract(ExtractRequest request) {
         Duration timeout = batchTimeout(ceilDiv(request.clauses().size(), CLAUSES_PER_BATCH));
-        return callWithRetry("/ai/extract", () -> aiWebClient.post()
+        return callOnce("/ai/extract", () -> aiWebClient.post()
                 .uri("/ai/extract")
                 .bodyValue(request)
                 .retrieve()
@@ -58,7 +71,7 @@ public class AiClient {
      * 쓴다.
      */
     public CandidatePlanResponse candidatesPlan(CandidatePlanRequest request) {
-        return callWithRetry("/ai/extract/candidates/plan", () -> aiWebClient.post()
+        return callOnce("/ai/extract/candidates/plan", () -> aiWebClient.post()
                 .uri("/ai/extract/candidates/plan")
                 .bodyValue(request)
                 .retrieve()
@@ -72,7 +85,7 @@ public class AiClient {
      * 이 호출도 Gemini를 부르지 않는다.
      */
     public CandidateMergeResponse candidatesMerge(CandidateMergeRequest request) {
-        return callWithRetry("/ai/extract/candidates/merge", () -> aiWebClient.post()
+        return callOnce("/ai/extract/candidates/merge", () -> aiWebClient.post()
                 .uri("/ai/extract/candidates/merge")
                 .bodyValue(request)
                 .retrieve()
@@ -84,7 +97,7 @@ public class AiClient {
         // AI 서버는 explain 항목을 하나씩 순서대로 처리하므로(초안·검토를 각각
         // 호출), 항목 수 자체가 배치 수와 같다.
         Duration timeout = batchTimeout(request.items().size());
-        return callWithRetry("/ai/explain", () -> aiWebClient.post()
+        return callOnce("/ai/explain", () -> aiWebClient.post()
                 .uri("/ai/explain")
                 .bodyValue(request)
                 .retrieve()
@@ -102,15 +115,11 @@ public class AiClient {
         return (total + perBatch - 1) / perBatch;
     }
 
-    private <T> T callWithRetry(String uri, Supplier<T> call) {
+    private <T> T callOnce(String uri, Supplier<T> call) {
         try {
             return call.get();
-        } catch (RuntimeException firstFailure) {
-            try {
-                return call.get();
-            } catch (RuntimeException secondFailure) {
-                throw new AiCallFailedException(uri + " 호출이 재시도 후에도 실패했습니다.", secondFailure);
-            }
+        } catch (RuntimeException failure) {
+            throw new AiCallFailedException(uri + " 호출이 실패했습니다.", failure);
         }
     }
 }
