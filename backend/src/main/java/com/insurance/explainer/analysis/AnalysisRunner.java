@@ -1,6 +1,7 @@
 package com.insurance.explainer.analysis;
 
 import com.insurance.explainer.analysis.ai.CandidateMergeRequest;
+import com.insurance.explainer.analysis.ai.CandidateMergeResponse;
 import com.insurance.explainer.analysis.ai.CandidatePartDto;
 import com.insurance.explainer.analysis.ai.CandidatePlanRequest;
 import com.insurance.explainer.analysis.ai.CandidatePlanResponse;
@@ -129,36 +130,39 @@ public class AnalysisRunner {
      * 조각(part)별로 나눠 순서대로 /ai/extract를 부르고, 끝나면 candidates/merge로
      * 원래 조항 기준 결과를 되돌려 받는다(명세서 5장, candidates 연동 문서).
      * <p>
-     * 조각 하나가 (AiClient의 재시도까지) 실패해도 그 조각은 빈 추출 결과로
-     * 채워 병합을 계속 진행한다 — merge는 모든 조각이 있어야 하므로, 빈 결과를
-     * 넣어 두면 그 조각의 조항만 추출 결과가 없어 F-17 "찾지 못함"으로 자연스럽게
-     * 남고, 다른 조각에서 성공한 결과는 그대로 쓴다. 조각이 하나도 성공하지
-     * 못했을 때만(계획 자체가 조각 하나뿐인 평소 상황을 포함) 기존처럼 분석을
-     * FAILED로 끝낸다.
+     * 조각 하나가 (AI 서버가 이미 내부 재시도·cooldown을 책임지는 상태에서도)
+     * 실패하면, 성공한 조각까지는 체크포인트에 남기고 즉시 분석을 중단한다.
+     * 실패한 조각을 빈 결과로 채워 계속 진행하면 그 조각의 조항들이 전부 F-17
+     * "찾지 못함"으로 둔갑해 버려 실제로는 분석되지 않은 범위를 "위험 없음"처럼
+     * 보여줄 위험이 있다(이는 안전하지 않은 동작이라 더는 쓰지 않는다). merge/
+     * explain은 모든 조각이 성공했을 때만 진행한다.
      */
     private List<ExtractionDto> extract(AnalysisRecord record) {
         List<ClauseDto> clauseDtos = record.clauses().stream().map(this::toClauseDto).toList();
         List<Integer> allCheckItemIds = CheckItem.ALL.stream().map(CheckItem::id).toList();
         ExtractRequest sourceRequest = new ExtractRequest(record.analysisId(), allCheckItemIds, clauseDtos);
+        CandidatePlanRequest planRequest = new CandidatePlanRequest(sourceRequest, CANDIDATE_MODE, null);
 
-        CandidatePlanResponse plan = aiClient.candidatesPlan(
-                new CandidatePlanRequest(sourceRequest, CANDIDATE_MODE, null));
+        CandidatePlanResponse plan = aiClient.candidatesPlan(planRequest);
         List<CandidatePartDto> parts = plan.candidatePlan().parts();
 
         Map<String, ExtractResponse> responseByPartId = new LinkedHashMap<>();
-        RuntimeException lastFailure = null;
-        int successCount = 0;
+        analysisStore.candidateCheckpoint(record.analysisId(),
+                new CandidateCheckpoint(planRequest, plan, responseByPartId, null, "PLANNED",
+                        plan.selection().coverage()));
         for (CandidatePartDto part : parts) {
             try {
                 responseByPartId.put(part.partId(), aiClient.extract(part.request()));
-                successCount++;
+                analysisStore.candidateCheckpoint(record.analysisId(),
+                        new CandidateCheckpoint(planRequest, plan, responseByPartId, null, "RUNNING",
+                                plan.selection().coverage()));
             } catch (RuntimeException partFailure) {
-                lastFailure = partFailure;
-                responseByPartId.put(part.partId(), new ExtractResponse(List.of()));
+                String state = responseByPartId.isEmpty() ? "FAILED" : "PARTIAL";
+                analysisStore.candidateCheckpoint(record.analysisId(),
+                        new CandidateCheckpoint(planRequest, plan, responseByPartId, part.partId(), state,
+                                plan.selection().coverage()));
+                throw partFailure;
             }
-        }
-        if (successCount == 0 && !parts.isEmpty()) {
-            throw lastFailure;
         }
 
         List<PartResultDto> partResults = parts.stream()
@@ -166,7 +170,18 @@ public class AnalysisRunner {
                 .toList();
         CandidateMergeRequest mergeRequest = new CandidateMergeRequest(sourceRequest, CANDIDATE_MODE, null,
                 plan.selection().selectionId(), plan.candidatePlan().planId(), partResults);
-        return aiClient.candidatesMerge(mergeRequest).extractions();
+        try {
+            CandidateMergeResponse merged = aiClient.candidatesMerge(mergeRequest);
+            analysisStore.candidateCheckpoint(record.analysisId(),
+                    new CandidateCheckpoint(planRequest, plan, responseByPartId, null, "CANDIDATES_COMPLETE",
+                            merged.coverage()));
+            return merged.extractions();
+        } catch (RuntimeException mergeFailure) {
+            analysisStore.candidateCheckpoint(record.analysisId(),
+                    new CandidateCheckpoint(planRequest, plan, responseByPartId, null, "MERGE_FAILED",
+                            plan.selection().coverage()));
+            throw mergeFailure;
+        }
     }
 
     private List<ExplainItemDto> buildExplainItems(List<ExtractionDto> validated,
@@ -188,16 +203,29 @@ public class AnalysisRunner {
     // 이유(F-12 "검토 실패"와 같은 QUOTE_ONLY 표시를 그대로 재사용한다).
     private static final String EXPLAIN_BATCH_FAILED_REASON = "AI 설명 요청이 실패해 원문만 보여줍니다.";
 
+    // AI 서버가 항목 하나당 초안 생성·의미 독립검토 2번씩 Gemini를 부르므로,
+    // 요청 하나에 넣는 항목이 많을수록 그 요청의 생성 호출 예산(명세서 5장)을
+    // 넘기기 쉽다. 그래서 두 항목씩 순서대로 나눠 보낸다.
+    private static final int EXPLAIN_BATCH_SIZE = 2;
+
     /**
-     * 평소에는 해설이 필요한 항목을 전부 한 번에 묶어 요청한다. 이 묶음 요청이
-     * 실패하면(extract와 같은 이유) 점검 항목별로 나눠 다시 시도한다. 그래도
-     * 실패하는 점검 항목은 review를 "fail"로 둬서, finalize에서 기존 F-12
+     * 해설이 필요한 항목을 {@link #EXPLAIN_BATCH_SIZE}개씩 순서대로 묶어 요청한다.
+     * 묶음 하나가 실패하면(extract와 같은 이유) 점검 항목별로 나눠 다시 시도한다.
+     * 그래도 실패하는 점검 항목은 review를 "fail"로 둬서, finalize에서 기존 F-12
      * 로직대로 QUOTE_ONLY(원문만 표시)로 처리되게 한다. 성공한 점검 항목은 AI가
      * 돌려준 제목·해설을 그대로 쓴다.
      */
     private List<CardDto> explain(AnalysisRecord record, List<ExplainItemDto> items) {
         if (items.isEmpty()) {
             return List.of();
+        }
+        if (items.size() > EXPLAIN_BATCH_SIZE) {
+            List<CardDto> result = new ArrayList<>();
+            for (int offset = 0; offset < items.size(); offset += EXPLAIN_BATCH_SIZE) {
+                int end = Math.min(offset + EXPLAIN_BATCH_SIZE, items.size());
+                result.addAll(explain(record, items.subList(offset, end)));
+            }
+            return result;
         }
         ExplainRequest wholeRequest = new ExplainRequest(record.analysisId(), items);
         try {

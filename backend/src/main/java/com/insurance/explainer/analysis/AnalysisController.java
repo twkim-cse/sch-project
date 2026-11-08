@@ -10,6 +10,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
+
 /**
  * 명세서 4장 프론트엔드 ⇄ 백엔드 API 중 분석 관련 3개(F-08).
  */
@@ -50,6 +52,20 @@ public class AnalysisController {
             case DONE -> StatusResponse.done(analysisId);
             case FAILED -> StatusResponse.failed(analysisId, record.errorCode(), record.errorMessage());
         };
+    }
+
+    // GET /api/analyses/{analysisId}/candidate-progress - 명세서 밖 내부 진단용.
+    // 추출 조각(candidates/plan·merge) 진행 상태만 보여주며 원문·인용은 담지
+    // 않는다. 프론트에 노출할지는 팀 협의가 필요해 아직 명세서에는 없다.
+    @GetMapping("/{analysisId}/candidate-progress")
+    public Map<String, Object> getCandidateProgress(@PathVariable String analysisId) {
+        if (analysisStore.get(analysisId) == null) {
+            throw ApiException.notFound("다시 올려 달라고 안내");
+        }
+        CandidateCheckpoint checkpoint = analysisStore.candidateCheckpoint(analysisId);
+        return checkpoint == null
+                ? Map.of("state", "NOT_STARTED", "fullDocumentSuccess", false)
+                : checkpoint.summary();
     }
 
     // GET /api/analyses/{analysisId}/result - 분석 결과 (status가 DONE일 때)

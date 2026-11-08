@@ -164,7 +164,7 @@ class AnalysisServiceTest {
     }
 
     @Test
-    void AI_호출이_재시도_후에도_실패하면_FAILED_ANALYSIS_FAILED로_끝난다() {
+    void AI_호출이_실패하면_FAILED_ANALYSIS_FAILED로_끝난다() {
         seedReadyDocument();
         aiClient.onExtract(req -> {
             throw new RuntimeException("AI 서버 응답 없음");
@@ -177,7 +177,7 @@ class AnalysisServiceTest {
         assertThat(finalRecord.errorCode()).isEqualTo("ANALYSIS_FAILED");
     }
 
-    // ---- candidates/plan·merge 기반 추출: 조각 하나만 실패해도 분석 전체가 FAILED로 끝나지 않아야 한다 ----
+    // ---- candidates/plan·merge 기반 추출: 조각이 하나라도 실패하면 분석은 즉시 FAILED로 끝나야 한다 ----
 
     @Test
     void 추출_계획이_여러_조각이면_순서대로_호출되고_결과가_합쳐진다() {
@@ -215,7 +215,7 @@ class AnalysisServiceTest {
     }
 
     @Test
-    void 추출_조각_하나만_실패해도_나머지_조각_결과는_포함되고_분석은_DONE으로_끝난다() {
+    void 필수_조각_하나가_실패하면_병합과_해설_없이_즉시_FAILED로_끝나고_체크포인트에_성공한_조각까지만_남는다() {
         seedReadyDocument();
         aiClient.onCandidatesPlan(req -> new CandidatePlanResponse(
                 new SelectionDto("selection-1"),
@@ -242,21 +242,19 @@ class AnalysisServiceTest {
         AnalysisRecord queued = service.start(new StartRequest("doc-1", List.of("rider01"), false));
         AnalysisRecord finalRecord = analysisStore.get(queued.analysisId());
 
-        // rider 조항이 속한 조각만 실패했을 뿐, 분석 전체는 FAILED가 아니라 DONE으로 끝난다.
-        assertThat(finalRecord.status()).isEqualTo(AnalysisStatus.DONE);
-        assertThat(finalRecord.cards()).hasSize(1);
-        assertThat(finalRecord.cards().get(0).checkItem()).isEqualTo(1);
+        // 조각 하나가 실패하면, 그 조각에 속한 조항들을 분석하지 않고도 F-17
+        // "찾지 못함"으로 둔갑시키지 않기 위해 분석 전체를 FAILED로 끝낸다.
+        assertThat(finalRecord.status()).isEqualTo(AnalysisStatus.FAILED);
+        assertThat(finalRecord.cards()).isEmpty();
 
-        var result = com.insurance.explainer.analysis.dto.ResultResponseBuilder.build(finalRecord);
-        assertThat(result.checkSummary()).filteredOn(c -> c.checkItem() == 1)
-                .extracting(c -> c.status()).containsExactly("FOUND");
-        // F-17: 실패한 조각에 속한 2번 항목은 추출 결과가 없으니 "찾지 못함"으로 자연스럽게 남는다.
-        assertThat(result.checkSummary()).filteredOn(c -> c.checkItem() == 2)
-                .extracting(c -> c.status()).containsExactly("NOT_FOUND");
+        CandidateCheckpoint checkpoint = analysisStore.candidateCheckpoint(queued.analysisId());
+        assertThat(checkpoint.state()).isEqualTo("PARTIAL");
+        assertThat(checkpoint.succeeded()).hasSize(1);
+        assertThat(checkpoint.failedPartId()).isEqualTo("part-rider");
     }
 
     @Test
-    void 추출_계획_수립_자체가_재시도_후에도_실패하면_여전히_FAILED_ANALYSIS_FAILED로_끝난다() {
+    void 추출_계획_수립_자체가_실패하면_여전히_FAILED_ANALYSIS_FAILED로_끝난다() {
         seedReadyDocument();
         aiClient.onCandidatesPlan(req -> {
             throw new RuntimeException("AI 서버 완전 다운");
