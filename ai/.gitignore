@@ -1,27 +1,17 @@
-.env
+# AI-private runtime inputs/results; synthetic fixtures remain versioned.
 *.env
-!.env.example
 __pycache__/
 *.pyc
 .venv/
-test_results/
 .pytest_cache/
-
-# Local-only real policy materials (never publish)
 KB_*.json
 samsung_*.json
-local_policy/
 README_KB_real_policy_test.md
 test_data/real_policy.json
 test_data/samsung_*.json
 test_data/README_real_policy_validation.md
-*.pdf
-*.zip
 *.7z
 *.rar
-
-# Local logs and tool output, including future diagnostics.
-*.log
 *.tmp
 *.bak
 tmp/
@@ -29,3 +19,21 @@ output/
 .codex/
 .agents/
 .aws/
+.env
+.env.*
+!.env.example
+!.env.*.example
+local_policy/
+test_results/
+checkpoints/
+.local-state/
+**/*.pdf
+**/*.zip
+**/*.log
+**/*_extract_request.json
+**/*_classify_request.json
+**/*_explain_request.json
+**/*real_policy*.json
+**/ABL*.json
+**/CM295F*.json
+**/New_Dental*.json
