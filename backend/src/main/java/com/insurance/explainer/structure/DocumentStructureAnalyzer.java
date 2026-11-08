@@ -3,6 +3,7 @@ package com.insurance.explainer.structure;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -344,13 +345,57 @@ public class DocumentStructureAnalyzer {
             throw new StructureAnalysisException("조항 구조를 인식하지 못했습니다.");
         }
 
-        List<Clause> dedupedClauses = deduplicateClauseIds(clauses);
+        List<Clause> mergedClauses = mergeDuplicateRiderNames(riders, clauses);
+        List<Clause> dedupedClauses = deduplicateClauseIds(mergedClauses);
 
         List<RiderRange> usedRiders = riders.values().stream()
                 .filter(r -> dedupedClauses.stream().anyMatch(c -> r.riderId().equals(c.riderId())))
                 .toList();
 
         return new StructureAnalysisResult(dedupedClauses, usedRiders);
+    }
+
+    /**
+     * 같은 특약 이름이 쪽 경계(표가 쪽을 넘어가거나 갱신형 변형이 뒤이어
+     * 나오는 등)에서 제목으로 두 번 인식되면, riderSeq가 매번 새 riderId를
+     * 발급해 "이름은 같은데 쪽수만 다른" 특약이 결과에 중복으로 남는다
+     * (실제 495쪽 ABL 약관에서 재현됨). 같은 이름을 가진 특약이 둘 이상이면
+     * 쪽수가 가장 앞선 쪽(제목이 처음 나온 쪽)으로 모든 조항을 합친다 —
+     * 조항이 없는 빈 쪽은 자연히 usedRiders 필터에서 사라지고, 둘 다 조항이
+     * 있으면 하나로 합쳐진다.
+     */
+    private List<Clause> mergeDuplicateRiderNames(Map<String, RiderRange> riders, List<Clause> clauses) {
+        Map<String, List<RiderRange>> byName = new LinkedHashMap<>();
+        for (RiderRange r : riders.values()) {
+            byName.computeIfAbsent(r.name(), k -> new ArrayList<>()).add(r);
+        }
+
+        Map<String, String> canonicalRiderIdByDuplicate = new LinkedHashMap<>();
+        for (List<RiderRange> group : byName.values()) {
+            if (group.size() < 2) {
+                continue;
+            }
+            RiderRange canonical = group.stream()
+                    .min(Comparator.comparingInt(RiderRange::pageStart))
+                    .orElseThrow();
+            for (RiderRange duplicate : group) {
+                if (!duplicate.riderId().equals(canonical.riderId())) {
+                    canonicalRiderIdByDuplicate.put(duplicate.riderId(), canonical.riderId());
+                    riders.remove(duplicate.riderId());
+                }
+            }
+        }
+
+        if (canonicalRiderIdByDuplicate.isEmpty()) {
+            return clauses;
+        }
+        return clauses.stream()
+                .map(c -> {
+                    String canonicalRiderId = canonicalRiderIdByDuplicate.get(c.riderId());
+                    return canonicalRiderId == null ? c : new Clause(c.clauseId(), canonicalRiderId, c.section(),
+                            c.article(), c.articleTitle(), c.paragraph(), c.page(), c.fromTable(), c.text());
+                })
+                .toList();
     }
 
     /**
