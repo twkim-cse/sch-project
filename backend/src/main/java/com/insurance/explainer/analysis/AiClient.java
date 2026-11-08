@@ -1,5 +1,9 @@
 package com.insurance.explainer.analysis;
 
+import com.insurance.explainer.analysis.ai.CandidateMergeRequest;
+import com.insurance.explainer.analysis.ai.CandidateMergeResponse;
+import com.insurance.explainer.analysis.ai.CandidatePlanRequest;
+import com.insurance.explainer.analysis.ai.CandidatePlanResponse;
 import com.insurance.explainer.analysis.ai.ExplainRequest;
 import com.insurance.explainer.analysis.ai.ExplainResponse;
 import com.insurance.explainer.analysis.ai.ExtractRequest;
@@ -45,6 +49,35 @@ public class AiClient {
                 .retrieve()
                 .bodyToMono(ExtractResponse.class)
                 .block(timeout));
+    }
+
+    /**
+     * 조항이 많은 약관을 /ai/extract에 통째로 보내면 413(배치/예산 초과)이
+     * 나므로, AI 서버의 무손실 분할 계획을 먼저 받는다(명세서 5장, 후보 필터링
+     * 연동). 이 호출은 Gemini를 부르지 않고 계산만 하므로 최소 대기 시간만
+     * 쓴다.
+     */
+    public CandidatePlanResponse candidatesPlan(CandidatePlanRequest request) {
+        return callWithRetry("/ai/extract/candidates/plan", () -> aiWebClient.post()
+                .uri("/ai/extract/candidates/plan")
+                .bodyValue(request)
+                .retrieve()
+                .bodyToMono(CandidatePlanResponse.class)
+                .block(MIN_TIMEOUT));
+    }
+
+    /**
+     * candidatesPlan이 나눠준 조각들을 각각 /ai/extract로 호출한 뒤, 그 결과를
+     * 모아 원래 조항 기준으로 합친다(위치·원문 대조는 AI 서버가 검증한다).
+     * 이 호출도 Gemini를 부르지 않는다.
+     */
+    public CandidateMergeResponse candidatesMerge(CandidateMergeRequest request) {
+        return callWithRetry("/ai/extract/candidates/merge", () -> aiWebClient.post()
+                .uri("/ai/extract/candidates/merge")
+                .bodyValue(request)
+                .retrieve()
+                .bodyToMono(CandidateMergeResponse.class)
+                .block(MIN_TIMEOUT));
     }
 
     public ExplainResponse explain(ExplainRequest request) {
